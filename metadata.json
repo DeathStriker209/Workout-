@@ -1,0 +1,6 @@
+{
+  "name": "ApexLift Workout Tracker & Exercise Guide",
+  "description": "Interactive 7-day split workout guide and set tracker with detailed muscle targeting, exercise form cues, and video tutorials.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
