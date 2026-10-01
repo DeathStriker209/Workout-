@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+html { font-size: 13px; }
 body {
   font-family: Lato, -apple-system, system-ui, sans-serif;
   background: #0d0d12;
