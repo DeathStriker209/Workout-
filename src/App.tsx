@@ -44,7 +44,8 @@ const catPhoto = (c: string) => ALL.find((e) => catOf(e) === c && e.photos?.leng
 const totalSets = (d: DayWorkout) => d.exercises.reduce((a, e) => a + e.sets.length, 0);
 const doneSets = (d: DayWorkout, logs: Record<string, CompletedSetLog>) =>
   d.exercises.reduce((a, e) => a + e.sets.filter((s) => logs[`${d.id}_${e.id}_set_${s.setNum}`]?.completed).length, 0);
-const shortName = (m: string) => m.split('(')[0].trim();
+const NAME: Record<string, string> = { abs: 'Core', quadriceps: 'Quadriceps', back: 'Back', cardio: 'Cardio' };
+const simpleNames = (groups: string[]) => [...new Set(groups.map((g) => NAME[g] ?? g.charAt(0).toUpperCase() + g.slice(1)))];
 
 // ---------- Rest timer (docked above the nav bar) ----------
 function RestTimer({ s, n, onClose }: { s: number; n: string; onClose: () => void }) {
@@ -116,7 +117,7 @@ function FormPic({ id, photos }: { id: string; photos: { url: string; label: str
   if (!noGif)
     return (
       <div className="bg-white rounded-3xl overflow-hidden">
-        <img src={`/exercise-gifs/${id}.gif`} alt="" className="w-full block" onError={() => setNoGif(true)} />
+        <img src={`/exercise-gifs/${id}.gif`} alt="" className="w-full max-h-[17rem] object-contain block mx-auto" onError={() => setNoGif(true)} />
       </div>
     );
   if (bad) return null;
@@ -423,8 +424,8 @@ export default function App() {
                 <h2 className="text-xl font-bold text-center mb-4">Muscles Worked</h2>
                 <Body on={regionsFor(sheet.ex.anatomyHighlightGroups)} className="h-80 w-auto mx-auto block" />
                 <div className="flex flex-wrap justify-center gap-2 mt-5">
-                  {[...sheet.ex.primaryMuscles, ...sheet.ex.secondaryMuscles.slice(0, 2)].map((m) => (
-                    <span key={m} className="bg-[#ff5733] rounded-full px-4 py-2 text-sm font-bold">{shortName(m)}</span>
+                  {simpleNames(sheet.ex.anatomyHighlightGroups).map((m) => (
+                    <span key={m} className="bg-[#ff5733] rounded-full px-4 py-2 text-sm font-bold">{m}</span>
                   ))}
                 </div>
               </>
