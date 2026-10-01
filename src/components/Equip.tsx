@@ -1,20 +1,21 @@
 import React from 'react';
 
-export type EquipKind = 'cable' | 'dumbbell' | 'barbell' | 'machine';
+export type EquipKind = 'cable' | 'dumbbell' | 'barbell' | 'machine' | 'pulldown';
 
 export const equipOf = (n: string): { label: string; kind: EquipKind } =>
-  /smith/i.test(n) ? { label: 'Smith machine', kind: 'barbell' }
+  /pulldown/i.test(n) ? { label: 'Lat pulldown machine', kind: 'pulldown' }
+  : /smith/i.test(n) ? { label: 'Smith machine', kind: 'barbell' }
   : /plate pinch/i.test(n) ? { label: 'Weight plates', kind: 'dumbbell' }
   : /ez|barbell|jm press|sldl|deadlift|reverse curl|preacher/i.test(n) ? { label: 'Barbell / EZ bar', kind: 'barbell' }
-  : /cable|pulldown|pushdown|row|crunch/i.test(n) ? { label: 'Cable machine', kind: 'cable' }
+  : /cable|pushdown|row|crunch/i.test(n) ? { label: 'Cable machine', kind: 'cable' }
   : /cycl/i.test(n) ? { label: 'Exercise bike', kind: 'machine' }
   : /leg press|extension|hamstring curl|pec deck|rear delt/i.test(n) ? { label: 'Machine', kind: 'machine' }
   : { label: 'Dumbbells', kind: 'dumbbell' };
 
 const L = '#d4d4d8', M = '#a1a1aa', D = '#71717a', R = '#ff5733';
 
-export const EquipArt: React.FC<{ kind: EquipKind }> = ({ kind }) => (
-  <svg viewBox="0 0 120 80" height={64} className="mx-auto block">
+export const EquipArt: React.FC<{ kind: EquipKind; h?: number }> = ({ kind, h = 64 }) => (
+  <svg viewBox="0 0 120 80" height={h} className="mx-auto block">
     {kind === 'cable' && (<>
       <rect x="14" y="14" width="12" height="58" rx="2" fill={L} /><rect x="94" y="14" width="12" height="58" rx="2" fill={L} />
       <rect x="17" y="26" width="6" height="30" fill={D} /><rect x="97" y="26" width="6" height="30" fill={D} />
@@ -32,6 +33,15 @@ export const EquipArt: React.FC<{ kind: EquipKind }> = ({ kind }) => (
       {[0, 1].map((s) => (<g key={s} transform={s ? 'translate(120 0) scale(-1 1)' : undefined}>
         <rect x="20" y="14" width="9" height="52" rx="3" fill={L} /><rect x="30" y="22" width="7" height="36" rx="3" fill={R} />
       </g>))}
+    </>)}
+    {kind === 'pulldown' && (<>
+      <rect x="12" y="72" width="96" height="5" rx="2" fill={M} />
+      <rect x="84" y="8" width="12" height="64" rx="2" fill={L} /><rect x="87" y="22" width="6" height="32" fill={D} />
+      <rect x="30" y="8" width="66" height="6" rx="2" fill={L} />
+      <path d="M36 14 V34 M64 14 V34" stroke={M} strokeWidth="2" />
+      <rect x="28" y="32" width="44" height="5" rx="2.5" fill={R} />
+      <rect x="40" y="58" width="30" height="6" rx="2" fill={L} /><rect x="36" y="48" width="26" height="4" rx="2" fill={D} />
+      <rect x="54" y="64" width="5" height="8" fill={M} />
     </>)}
     {kind === 'machine' && (<>
       <rect x="12" y="68" width="96" height="6" rx="2" fill={M} />

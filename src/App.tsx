@@ -104,14 +104,21 @@ function Stopwatch({ target }: { target?: number }) {
 }
 
 // ---------- Form photo: full-width white card, flips between positions ----------
-function FormPic({ photos }: { photos: { url: string; label: string }[] }) {
+function FormPic({ id, photos }: { id: string; photos: { url: string; label: string }[] }) {
   const [i, setI] = useState(0);
   const [bad, setBad] = useState(false);
+  const [noGif, setNoGif] = useState(false);
   useEffect(() => {
     if (photos.length < 2) return;
     const t = setInterval(() => setI((x) => (x + 1) % photos.length), 1000);
     return () => clearInterval(t);
   }, [photos.length]);
+  if (!noGif)
+    return (
+      <div className="bg-white rounded-3xl overflow-hidden">
+        <img src={`/exercise-gifs/${id}.gif`} alt="" className="w-full block" onError={() => setNoGif(true)} />
+      </div>
+    );
   if (bad) return null;
   return (
     <div className="relative bg-white rounded-3xl overflow-hidden">
@@ -133,7 +140,7 @@ export default function App() {
   });
   const [timer, setTimer] = useState<{ id: number; s: number; n: string } | null>(null);
   const [q, setQ] = useState('');
-  const [sheet, setSheet] = useState<Exercise | null>(null);
+  const [sheet, setSheet] = useState<{ ex: Exercise; kind: 'muscle' | 'equip' } | null>(null);
 
   useEffect(() => {
     try { localStorage.setItem(KEY, JSON.stringify({ setLogs: ws.setLogs, completedDays: ws.completedDays })); } catch { /* ignore */ }
@@ -293,14 +300,14 @@ export default function App() {
           <h1 className="text-2xl font-bold mt-3">{e.name}</h1>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div className={`${card} text-center !px-3`}>
+          <button onClick={() => setSheet({ ex: e, kind: 'equip' })} className={`${card} text-center !px-3`}>
             <div className="font-bold mb-3">Equipment</div>
-            <EquipArt kind={eq.kind} />
+            <EquipArt kind={eq.kind} h={92} />
             <div className="text-gray-400 text-xs mt-3">{eq.label}</div>
-          </div>
-          <button onClick={() => setSheet(e)} className={`${card} !px-3`}>
+          </button>
+          <button onClick={() => setSheet({ ex: e, kind: 'muscle' })} className={`${card} !px-3`}>
             <div className="font-bold mb-2">Muscles</div>
-            <div className="flex justify-center gap-1"><Body side="front" on={on} h={92} /><Body side="back" on={on} h={92} /></div>
+            <Body on={on} className="h-44 w-auto mx-auto block" />
           </button>
         </div>
         {dayId && e.sets.length > 0 && (
@@ -341,7 +348,7 @@ export default function App() {
             {e.formTips.map((t, i) => <p key={i} className="text-gray-400 leading-relaxed mb-1.5">• {t}</p>)}
           </div>
         )}
-        {e.photos && e.photos.length > 0 && <FormPic photos={e.photos} />}
+        <FormPic key={e.id} id={e.id} photos={e.photos ?? []} />
       </div>
     );
   };
@@ -411,16 +418,23 @@ export default function App() {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-end" onClick={() => setSheet(null)}>
           <div className="w-full max-w-md mx-auto bg-[#0d0d12] rounded-t-3xl p-5 pb-8" onClick={(ev) => ev.stopPropagation()}>
             <div className="w-10 h-1 bg-gray-600 rounded-full mx-auto mb-4" />
-            <h2 className="text-xl font-bold text-center mb-4">Muscles Worked</h2>
-            <div className="flex justify-center gap-6">
-              <Body side="front" on={regionsFor(sheet.anatomyHighlightGroups)} h={250} />
-              <Body side="back" on={regionsFor(sheet.anatomyHighlightGroups)} h={250} />
-            </div>
-            <div className="flex flex-wrap justify-center gap-2 mt-5">
-              {[...sheet.primaryMuscles, ...sheet.secondaryMuscles.slice(0, 2)].map((m) => (
-                <span key={m} className="bg-[#ff5733] rounded-full px-4 py-2 text-sm font-bold">{shortName(m)}</span>
-              ))}
-            </div>
+            {sheet.kind === 'muscle' ? (
+              <>
+                <h2 className="text-xl font-bold text-center mb-4">Muscles Worked</h2>
+                <Body on={regionsFor(sheet.ex.anatomyHighlightGroups)} className="h-80 w-auto mx-auto block" />
+                <div className="flex flex-wrap justify-center gap-2 mt-5">
+                  {[...sheet.ex.primaryMuscles, ...sheet.ex.secondaryMuscles.slice(0, 2)].map((m) => (
+                    <span key={m} className="bg-[#ff5733] rounded-full px-4 py-2 text-sm font-bold">{shortName(m)}</span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-xl font-bold text-center mb-4">Equipment</h2>
+                <EquipArt kind={equipOf(sheet.ex.name).kind} h={150} />
+                <div className="text-center font-semibold mt-4">{equipOf(sheet.ex.name).label}</div>
+              </>
+            )}
           </div>
         </div>
       )}
