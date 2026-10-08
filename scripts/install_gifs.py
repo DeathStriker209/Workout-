@@ -70,3 +70,4 @@ for ex_id, gif in GIFS.items():
     else:
         missing.append(f'{ex_id} ({gif})')
 print(f"{done} GIFs installed, {len(missing)} missing: {', '.join(missing) or 'none'}")
+print("Now run: python3 scripts/make_thumbs.py  (makes the small list pictures)")

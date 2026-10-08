@@ -1,29 +1,31 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import confetti from 'canvas-confetti';
-import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import { MotionConfig, motion } from 'motion/react';
 import {
   BedDouble, Check, ChevronLeft, ChevronRight, Droplets, Dumbbell, Footprints, Heart, House, Moon, RotateCcw,
-  Search, Timer, Utensils, X, Ban, CircleAlert, CircleCheck, Play,
+  Search, Timer, Utensils, X, Ban, CircleAlert, CircleCheck, Play, ArrowLeftRight,
 } from 'lucide-react';
 import { WORKOUT_DAYS as DAYS } from './data/workoutData';
 import { LIBRARY_EXERCISES } from './data/exerciseLibrary';
+import { ALTERNATIVES } from './data/alternatives';
 import { Category, CompletedSetLog, DayWorkout, Exercise, MuscleGroup, WorkoutState } from './types/workout';
 import { Body, MUSCLE_LABEL, regionsFor } from './components/Body';
 import { EquipArt } from './components/Equip';
 import { Splash } from './components/Splash';
-import { Confirm, EASE, Sheet, Tap } from './components/ui';
-import { TimerDock, TimerPanel, fmt, useRestTimer } from './components/RestTimer';
+import { Confirm, Sheet, Tap } from './components/ui';
+import { TimerDock, TimerPanel, fmt, timer, useTimerBase } from './components/RestTimer';
 import { playChime } from './utils/audio';
 
 const KEY = 'apexlift_workout_tracker_state_v4';
-const blank: WorkoutState = { setLogs: {}, completedDays: {} };
+const blank: WorkoutState = { setLogs: {}, completedDays: {}, swaps: {} };
 
 // ---------- design tokens (kept as class strings so Tailwind can see them) ----------
 const card = 'bg-[#17171c] rounded-[24px] border border-white/[.04]';
 const pill = 'inline-flex items-center gap-1.5 text-xs font-semibold text-[#ff6a4a] bg-[#3a1d18] rounded-full px-3 py-1.5';
 const muted = 'text-[#9a9aa3]';
 const NAV_DELAY = 60; // ms: lets the press animation show before the screen changes
+const LETTERS = 'ABCDEFG';
 
 type Nav = { tab: 'home' | 'ex'; day?: string; cat?: Category; ex?: string };
 const depth = (n: Nav) => (n.ex ? 3 : n.day || n.cat ? 2 : 1);
@@ -47,6 +49,10 @@ const ALL: Exercise[] = [...PLAN_EX, ...LIBRARY_EXERCISES];
 const BY_ID = new Map<string, Exercise>();
 DAYS.forEach((d) => d.exercises.forEach((e) => BY_ID.set(e.id, e)));
 ALL.forEach((e) => BY_ID.set(e.id, e));
+
+/** Option A (the planned exercise) followed by its swap options. */
+const optionsFor = (slot: Exercise): Exercise[] =>
+  [slot, ...(ALTERNATIVES[slot.id] ?? []).map((id) => BY_ID.get(id)).filter((x): x is Exercise => !!x)];
 
 const CATS: { c: Category; view: 'front' | 'back' | 'frontUpper' | 'backUpper' | 'frontLower'; on: MuscleGroup[] }[] = [
   { c: 'Chest', view: 'frontUpper', on: ['chest'] },
@@ -77,13 +83,14 @@ const setsSummary = (e: Exercise) => {
 const todayNumber = () => ((new Date().getDay() + 6) % 7) + 1;
 
 // ---------- small pieces ----------
-/** Exercise thumbnail: GIF, then photo, then equipment drawing. */
+/** List picture: a small still image (fast), then the photo, then an equipment drawing. */
 function Thumb({ ex, size = 56 }: { ex: Exercise; size?: number }) {
   const [step, setStep] = useState(0);
-  const src = step === 0 ? `/exercise-gifs/${ex.id}.gif` : step === 1 ? ex.photos?.[0]?.url : undefined;
+  const src = step === 0 ? `/exercise-thumbs/${ex.id}.webp` : step === 1 ? ex.photos?.[0]?.url : undefined;
   return (
     <div className="rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center" style={{ width: size, height: size }}>
-      {src ? <img src={src} alt="" loading="lazy" className="w-full h-full object-contain" onError={() => setStep((s) => (s === 0 && ex.photos?.length ? 1 : 2))} />
+      {src ? <img src={src} alt="" loading="lazy" decoding="async" width={size} height={size} className="w-full h-full object-contain"
+        onError={() => setStep((s) => (s === 0 && ex.photos?.length ? 1 : 2))} />
         : <div className="w-full h-full bg-[#26262e] flex items-center justify-center"><EquipArt kind={ex.equipment.kind} h={size * 0.55} /></div>}
     </div>
   );
@@ -103,7 +110,7 @@ function FormPic({ ex }: { ex: Exercise }) {
   if (!noGif)
     return (
       <div className="bg-white rounded-[24px] overflow-hidden">
-        <img src={`/exercise-gifs/${ex.id}.gif`} alt={`${ex.name} demonstration`} className="w-full max-h-[19rem] object-contain block mx-auto" onError={() => setNoGif(true)} />
+        <img src={`/exercise-gifs/${ex.id}.gif`} alt={`${ex.name} demonstration`} decoding="async" className="w-full max-h-[19rem] object-contain block mx-auto" onError={() => setNoGif(true)} />
       </div>
     );
   if (bad || !photos.length) return null;
@@ -121,7 +128,7 @@ function Stopwatch({ target }: { target?: number }) {
   const [start, setStart] = useState<number | null>(null);
   const [base, setBase] = useState(0);
   const [, force] = useState(0);
-  useEffect(() => { if (start === null) return; const i = setInterval(() => force((x) => x + 1), 250); return () => clearInterval(i); }, [start]);
+  useEffect(() => { if (start === null) return; const i = setInterval(() => force((x) => x + 1), 500); return () => clearInterval(i); }, [start]);
   const t = base + (start ? Math.floor((Date.now() - start) / 1000) : 0);
   const hit = useRef(false);
   useEffect(() => { if (target && t >= target && !hit.current) { hit.current = true; playChime(780, 0.3); } }, [t, target]);
@@ -131,7 +138,7 @@ function Stopwatch({ target }: { target?: number }) {
       <div className="flex-1">
         <div className={`${muted} text-xs`}>{target ? `Hold timer, target ${fmt(target)}` : 'Hold timer'}</div>
         <div className="font-display text-[1.9rem] leading-tight tabular-nums">{fmt(t)}</div>
-        {target ? <div className="h-1 rounded-full bg-[#26262e] mt-1.5 overflow-hidden"><div className="h-full bg-[#ff5733] transition-[width] duration-300" style={{ width: `${frac * 100}%` }} /></div> : null}
+        {target ? <div className="h-1 rounded-full bg-[#26262e] mt-1.5 overflow-hidden"><div className="bar h-full bg-[#ff5733]" style={{ transform: `scaleX(${frac})` }} /></div> : null}
       </div>
       <Tap onClick={() => { if (start) { setBase(t); setStart(null); } else setStart(Date.now()); }} className="h-11 px-5 rounded-2xl bg-[#ff5733] font-semibold">{start ? 'Stop' : 'Start'}</Tap>
       <Tap onClick={() => { setStart(null); setBase(0); hit.current = false; }} className="w-11 h-11 rounded-2xl bg-[#26262e] flex items-center justify-center" aria-label="Reset stopwatch"><RotateCcw size={17} /></Tap>
@@ -145,16 +152,51 @@ function ProgressRing({ frac, size = 64, children }: { frac: number; size?: numb
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <svg width={size} height={size} className="-rotate-90">
         <circle cx={size / 2} cy={size / 2} r={r} stroke="#2a2a31" strokeWidth={s} fill="none" />
-        <motion.circle cx={size / 2} cy={size / 2} r={r} stroke="#ff5733" strokeWidth={s} fill="none" strokeLinecap="round"
-          strokeDasharray={c} initial={{ strokeDashoffset: c }} animate={{ strokeDashoffset: c * (1 - frac) }} transition={{ duration: 0.8, ease: EASE }} />
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="#ff5733" strokeWidth={s} fill="none" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - frac)} style={{ transition: 'stroke-dashoffset .6s cubic-bezier(.22,1,.36,1)' }} />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">{children}</div>
     </div>
   );
 }
 
-const list = { hidden: {}, show: { transition: { staggerChildren: 0.045, delayChildren: 0.02 } } };
-const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: { duration: 0.42, ease: EASE } } };
+/** Thin progress bar that grows with a transform (cheap to animate). */
+const Bar = ({ frac, className = 'h-1' }: { frac: number; className?: string }) => (
+  <div className={`${className} bg-[#26262e] rounded-full overflow-hidden`}>
+    <div className="bar h-full rounded-full bg-[#ff5733]" style={{ transform: `scaleX(${frac})` }} />
+  </div>
+);
+
+/** Option chips (A, B, C…) at the top of a plan exercise. Only scrolls sideways to keep the pick in view. */
+function SwapBar({ slot, shown, onPick }: { slot: Exercise; shown: Exercise; onPick: (e: Exercise) => void }) {
+  const opts = optionsFor(slot);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = ref.current, el = box?.querySelector<HTMLElement>('[data-on="true"]');
+    if (box && el) box.scrollTo({ left: el.offsetLeft - (box.clientWidth - el.offsetWidth) / 2, behavior: 'smooth' });
+  }, [shown.id]);
+  if (opts.length < 2) return null;
+  return (
+    <div className="-mx-5">
+      <div className={`px-5 mb-2 text-[0.8rem] ${muted} flex items-center gap-1.5`}><ArrowLeftRight size={13} />Swap exercise, same muscles</div>
+      <div ref={ref} className="relative flex gap-2 overflow-x-auto px-5 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {opts.map((o, i) => {
+          const on = o.id === shown.id;
+          return (
+            <Tap key={o.id} data-on={on} onClick={() => onPick(o)} scale={0.94} aria-pressed={on}
+              className={`shrink-0 flex items-center gap-2 h-11 pl-1.5 pr-4 rounded-full border transition-colors duration-200 ${on ? 'bg-[#ff5733] border-transparent' : 'bg-[#17171c] border-white/[.06]'}`}>
+              <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${on ? 'bg-white/25' : 'bg-[#26262e] text-[#ff6a4a]'}`}>{LETTERS[i]}</span>
+              <span className={`text-[0.9rem] font-semibold whitespace-nowrap ${on ? '' : 'text-[#c9c9d0]'}`}>{o.name}</span>
+            </Tap>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Staggered entrance on the home screen (CSS animation, delay from --i). */
+const rise = (i: number) => ({ className: 'rise', style: { ['--i' as string]: i } as React.CSSProperties });
 
 // =====================================================================
 export default function App() {
@@ -165,13 +207,13 @@ export default function App() {
   const [ws, setWs] = useState<WorkoutState>(() => {
     try {
       const p = JSON.parse(localStorage.getItem(KEY) || '');
-      return { setLogs: p.setLogs || {}, completedDays: p.completedDays || {} };
+      return { setLogs: p.setLogs || {}, completedDays: p.completedDays || {}, swaps: p.swaps || {} };
     } catch { return blank; }
   });
   const [q, setQ] = useState('');
   const [sheet, setSheet] = useState<{ kind: 'muscle' | 'equip'; ex: Exercise } | { kind: 'timer' } | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
-  const timer = useRestTimer();
+  const timerBase = useTimerBase(); // only changes on start/pause/close, not every second
 
   useEffect(() => {
     try { localStorage.setItem(KEY, JSON.stringify(ws)); } catch { /* storage full or blocked */ }
@@ -196,28 +238,37 @@ export default function App() {
     return () => { h.then((x) => x.remove()).catch(() => {}); };
   }, []);
 
+  /** The exercise actually being done in a plan slot (A = planned, or a swap). */
+  const chosen = (dayId: string, slot: Exercise) => BY_ID.get(ws.swaps?.[`${dayId}_${slot.id}`] ?? '') ?? slot;
+  const choose = (dayId: string, slot: Exercise, pick: Exercise) =>
+    setWs((p) => {
+      const swaps = { ...p.swaps };
+      if (pick.id === slot.id) delete swaps[`${dayId}_${slot.id}`]; else swaps[`${dayId}_${slot.id}`] = pick.id;
+      return { ...p, swaps };
+    });
+
   const withDone = (p: WorkoutState, logs: Record<string, CompletedSetLog>, dayId: string): WorkoutState => {
     const d = DAYS.find((x) => x.id === dayId)!;
     const cd = { ...p.completedDays };
     const t = totalSets(d), n = doneSets(d, logs);
     if (t > 0 && n === t) {
-      if (!cd[dayId]) { try { confetti({ particleCount: 90, spread: 70, origin: { y: 0.7 }, colors: ['#ff5733', '#ffb199', '#ffffff', '#4aa8ff'] }); } catch { /* no canvas */ } playChime(880, 0.4); }
+      if (!cd[dayId]) { try { confetti({ particleCount: 70, spread: 70, origin: { y: 0.7 }, colors: ['#ff5733', '#ffb199', '#ffffff', '#4aa8ff'], disableForReducedMotion: true }); } catch { /* no canvas */ } playChime(880, 0.4); }
       cd[dayId] = { completedAt: new Date().toISOString(), completedSets: n, totalSets: t };
     } else delete cd[dayId];
     return { ...p, setLogs: logs, completedDays: cd };
   };
 
-  const toggle = (dayId: string, ex: Exercise, num: number) => {
-    const k = setKey(dayId, ex.id, num);
+  const toggle = (dayId: string, slot: Exercise, shown: Exercise, num: number) => {
+    const k = setKey(dayId, slot.id, num);
     const cur = ws.setLogs[k];
     const was = !!cur?.completed;
-    const s = ex.sets.find((x) => x.setNum === num);
+    const s = slot.sets.find((x) => x.setNum === num);
     setWs((p) => withDone(p, { ...p.setLogs, [k]: { completed: !was, weightKg: cur?.weightKg ?? '', actualReps: s?.targetReps ?? '', completedAt: !was ? new Date().toISOString() : undefined } }, dayId));
-    if (!was && s?.targetReps) timer.start(ex.defaultRestSeconds || 120, ex.name);
+    if (!was && s?.targetReps) timer.start(shown.defaultRestSeconds || slot.defaultRestSeconds || 120, shown.name);
   };
 
-  const setKg = (dayId: string, ex: Exercise, num: number, w: string) => {
-    const k = setKey(dayId, ex.id, num);
+  const setKg = (dayId: string, slot: Exercise, num: number, w: string) => {
+    const k = setKey(dayId, slot.id, num);
     setWs((p) => ({ ...p, setLogs: { ...p.setLogs, [k]: { ...p.setLogs[k], completed: !!p.setLogs[k]?.completed, weightKg: w } } }));
   };
 
@@ -237,10 +288,11 @@ export default function App() {
       d.exercises.forEach((e) => e.sets.forEach((s) => delete logs[setKey(d.id, e.id, s.setNum)]));
       const cd = { ...p.completedDays };
       delete cd[d.id];
-      return { setLogs: logs, completedDays: cd };
+      return { ...p, setLogs: logs, completedDays: cd };
     });
 
-  const doResetAll = () => { setWs(blank); timer.close(); setConfirmReset(false); };
+  // Keeps your exercise swaps; clears ticks and weights.
+  const doResetAll = () => { setWs((p) => ({ ...blank, swaps: p.swaps })); timer.close(); setConfirmReset(false); };
 
   const back = (label: string) => (
     <Tap onClick={goBack} scale={0.92} className="flex items-center gap-0.5 -ml-1.5 h-10 pr-3 text-[#ff6a4a] text-[1.05rem] font-semibold">
@@ -248,9 +300,9 @@ export default function App() {
     </Tap>
   );
 
-  const row = (e: Exercise, sub: string, onClick: () => void, done = false, key?: string) => (
+  const row = (e: Exercise, sub: React.ReactNode, onClick: () => void, done = false, key?: string) => (
     <Tap key={key ?? e.id} onClick={onClick} delay={NAV_DELAY} scale={0.97}
-      className={`${card} w-full text-left flex items-center gap-3.5 p-2.5 pr-4 active:bg-[#1d1d23] transition-colors`}>
+      className={`${card} w-full text-left flex items-center gap-3.5 p-2.5 pr-4`}>
       <Thumb ex={e} />
       <div className="flex-1 min-w-0">
         <div className="font-semibold text-[1.05rem] leading-snug">{e.name}</div>
@@ -269,38 +321,43 @@ export default function App() {
     const doneCount = TRAINING_DAYS.filter((d) => ws.completedDays[d.id]).length;
     const t = totalSets(today), n = doneSets(today, ws.setLogs);
     const next = DAYS.find((d) => d.dayNumber > tn && d.category !== 'rest') ?? DAYS[0];
+    const plural = (k: number) => `${k} ${k === 1 ? 'exercise' : 'exercises'}`;
     return (
-      <motion.div className="px-5 pt-[calc(1.75rem+env(safe-area-inset-top))]" variants={list} initial="hidden" animate="show">
-        <motion.header variants={item} className="flex items-center gap-3">
-          <img src="/logo.png" alt="" className="w-10 h-10 rounded-xl" />
-          <div className="flex-1">
-            <h1 className="font-display text-[1.75rem] leading-none">ApexLift</h1>
-            <p className={`${muted} text-[0.85rem] mt-1`}>{doneCount} of {TRAINING_DAYS.length} workouts done this week</p>
+      <div className="px-5 pt-[calc(1.75rem+env(safe-area-inset-top))]">
+        <header {...rise(0)}>
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="" className="w-10 h-10 rounded-xl" />
+            <div className="flex-1">
+              <h1 className="font-display text-[1.75rem] leading-none">ApexLift</h1>
+              <p className={`${muted} text-[0.85rem] mt-1`}>{doneCount} of {TRAINING_DAYS.length} workouts done this week</p>
+            </div>
+            <ResetButton onClick={() => setConfirmReset(true)} />
           </div>
-          <ResetButton onClick={() => setConfirmReset(true)} />
-        </motion.header>
+        </header>
 
         {/* week strip */}
-        <motion.div variants={item} className="grid grid-cols-7 gap-1.5 mt-6">
-          {DAYS.map((d) => {
-            const done = !!ws.completedDays[d.id];
-            const isToday = d.dayNumber === tn;
-            const rest = d.category === 'rest';
-            return (
-              <Tap key={d.id} onClick={() => go({ tab: 'home', day: d.id })} delay={NAV_DELAY} scale={0.9} className="flex flex-col items-center gap-1.5 py-1" aria-label={`${d.dayName}, ${d.title}`}>
-                <span className={`text-[0.75rem] font-semibold ${isToday ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`}>{d.shortDay.slice(0, 2)}</span>
-                <span className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${done ? 'bg-[#ff5733]' : 'bg-[#17171c]'} ${isToday && !done ? 'ring-2 ring-[#ff5733] ring-offset-2 ring-offset-[#0d0d12]' : ''}`}>
-                  {done ? <Check size={17} strokeWidth={3} /> : rest ? <Moon size={15} className="text-[#6b6b74]" /> : <span className="w-1.5 h-1.5 rounded-full bg-[#3a3a44]" />}
-                </span>
-              </Tap>
-            );
-          })}
-        </motion.div>
+        <div {...rise(1)}>
+          <div className="grid grid-cols-7 gap-1.5 mt-6">
+            {DAYS.map((d) => {
+              const done = !!ws.completedDays[d.id];
+              const isToday = d.dayNumber === tn;
+              const rest = d.category === 'rest';
+              return (
+                <Tap key={d.id} onClick={() => go({ tab: 'home', day: d.id })} delay={NAV_DELAY} scale={0.9} className="flex flex-col items-center gap-1.5 py-1" aria-label={`${d.dayName}, ${d.title}`}>
+                  <span className={`text-[0.75rem] font-semibold ${isToday ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`}>{d.shortDay.slice(0, 2)}</span>
+                  <span className={`w-10 h-10 rounded-full flex items-center justify-center ${done ? 'bg-[#ff5733]' : 'bg-[#17171c]'} ${isToday && !done ? 'ring-2 ring-[#ff5733] ring-offset-2 ring-offset-[#0d0d12]' : ''}`}>
+                    {done ? <Check size={17} strokeWidth={3} /> : rest ? <Moon size={15} className="text-[#6b6b74]" /> : <span className="w-1.5 h-1.5 rounded-full bg-[#3a3a44]" />}
+                  </span>
+                </Tap>
+              );
+            })}
+          </div>
+        </div>
 
         {/* today */}
-        <motion.div variants={item} className="mt-5">
+        <div {...rise(2)}>
           <Tap onClick={() => go({ tab: 'home', day: today.id })} delay={NAV_DELAY} scale={0.975}
-            className="relative w-full text-left rounded-[28px] overflow-hidden p-5 bg-[radial-gradient(120%_90%_at_100%_0%,#4a1f15_0%,#1d1414_45%,#17171c_100%)] border border-[#ff5733]/15">
+            className="relative w-full text-left rounded-[28px] overflow-hidden p-5 mt-5 bg-[radial-gradient(120%_90%_at_100%_0%,#4a1f15_0%,#1d1414_45%,#17171c_100%)] border border-[#ff5733]/15">
             <div className="flex items-start gap-4">
               <div className="flex-1 min-w-0">
                 <div className="text-[0.85rem] font-semibold text-[#ff8a6e]">Today, {today.dayName}</div>
@@ -313,7 +370,7 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 mt-5">
               {today.category !== 'rest' && <>
-                <span className="text-[0.8rem] bg-white/[.06] rounded-full px-3 py-1.5">{today.exercises.length} {today.exercises.length === 1 ? 'exercise' : 'exercises'}</span>
+                <span className="text-[0.8rem] bg-white/[.06] rounded-full px-3 py-1.5">{plural(today.exercises.length)}</span>
                 <span className="text-[0.8rem] bg-white/[.06] rounded-full px-3 py-1.5">~{today.estimatedDurationMin} min</span>
               </>}
               <span className="ml-auto inline-flex items-center gap-1.5 bg-[#ff5733] rounded-full pl-3.5 pr-3 h-10 font-semibold text-[0.95rem]">
@@ -322,16 +379,16 @@ export default function App() {
               </span>
             </div>
           </Tap>
-        </motion.div>
+        </div>
 
-        <motion.h2 variants={item} className="font-display text-[1.15rem] mt-7 mb-3">This week</motion.h2>
+        <h2 {...rise(3)}><span className="block font-display text-[1.15rem] mt-7 mb-3">This week</span></h2>
         <div className="space-y-2.5">
-          {DAYS.map((d) => {
+          {DAYS.map((d, i) => {
             const tt = totalSets(d), nn = doneSets(d, ws.setLogs);
             const isToday = d.dayNumber === tn;
             const done = !!ws.completedDays[d.id];
             return (
-              <motion.div key={d.id} variants={item}>
+              <div key={d.id} {...rise(4 + i)}>
                 <Tap onClick={() => go({ tab: 'home', day: d.id })} delay={NAV_DELAY} scale={0.97}
                   className={`${card} w-full text-left flex items-center gap-3.5 p-3 pr-4 ${isToday ? '!border-[#ff5733]/40' : ''}`}>
                   <div className={`w-12 h-12 rounded-2xl font-bold text-[0.85rem] flex items-center justify-center shrink-0 ${done ? 'bg-[#ff5733] text-white' : 'bg-[#3a1d18] text-[#ff6a4a]'}`}>{d.shortDay}</div>
@@ -341,20 +398,16 @@ export default function App() {
                       {isToday && <span className="text-[0.7rem] font-bold bg-[#ff5733] rounded-full px-2 py-0.5">Today</span>}
                     </div>
                     <div className={`${muted} text-[0.85rem] truncate mt-0.5`}>{d.subtitle}</div>
-                    {tt > 0 && (
-                      <div className="h-1 bg-[#26262e] rounded-full mt-2 overflow-hidden">
-                        <motion.div className="h-full rounded-full bg-[#ff5733]" initial={{ width: 0 }} animate={{ width: `${(nn / tt) * 100}%` }} transition={{ duration: 0.7, ease: EASE, delay: 0.25 }} />
-                      </div>
-                    )}
+                    {tt > 0 && <Bar frac={nn / tt} className="h-1 mt-2" />}
                   </div>
                   {done ? <span className="w-7 h-7 rounded-full bg-[#ff5733] flex items-center justify-center"><Check size={16} strokeWidth={3} /></span>
                     : d.category === 'rest' ? <Moon size={18} className="text-[#55555e]" /> : <ChevronRight size={18} className="text-[#55555e]" />}
                 </Tap>
-              </motion.div>
+              </div>
             );
           })}
         </div>
-      </motion.div>
+      </div>
     );
   };
 
@@ -362,6 +415,7 @@ export default function App() {
   const dayScreen = (d: DayWorkout) => {
     if (d.category === 'rest') return restScreen(d);
     const t = totalSets(d), n = doneSets(d, ws.setLogs);
+    const plural = (k: number) => `${k} ${k === 1 ? 'exercise' : 'exercises'}`;
     return (
       <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))]">
         {back('Home')}
@@ -370,16 +424,20 @@ export default function App() {
           <h1 className="font-display text-[2.2rem] leading-none mt-3">{d.title}</h1>
           <p className="text-[#c9c9d0] mt-2 leading-snug">{d.subtitle}</p>
           <div className="flex gap-2 mt-4 text-[0.8rem]">
-            <span className="bg-white/[.06] rounded-full px-3 py-1.5">{d.exercises.length} {d.exercises.length === 1 ? 'exercise' : 'exercises'}</span>
+            <span className="bg-white/[.06] rounded-full px-3 py-1.5">{plural(d.exercises.length)}</span>
             <span className="bg-white/[.06] rounded-full px-3 py-1.5">~{d.estimatedDurationMin} min</span>
             <span className="bg-white/[.06] rounded-full px-3 py-1.5 tabular-nums">{n}/{t} sets</span>
           </div>
-          <div className="h-1.5 bg-[#26262e] rounded-full mt-4 overflow-hidden">
-            <motion.div className="h-full bg-[#ff5733] rounded-full" initial={false} animate={{ width: `${t ? (n / t) * 100 : 0}%` }} transition={{ duration: 0.5, ease: EASE }} />
-          </div>
+          <Bar frac={t ? n / t : 0} className="h-1.5 mt-4" />
         </div>
         <div className="space-y-2.5 mt-3">
-          {d.exercises.map((e) => row(e, setsSummary(e), () => go({ tab: 'home', day: d.id, ex: e.id }), exDone(d, e, ws.setLogs)))}
+          {d.exercises.map((slot) => {
+            const e = chosen(d.id, slot);
+            const sub = e.id !== slot.id
+              ? <span className="inline-flex items-center gap-1"><ArrowLeftRight size={12} className="text-[#ff6a4a]" />Swapped · {setsSummary(slot)}</span>
+              : setsSummary(slot);
+            return row(e, sub, () => go({ tab: 'home', day: d.id, ex: slot.id }), exDone(d, slot, ws.setLogs), slot.id);
+          })}
         </div>
         <div className="flex gap-3 mt-4">
           <Tap onClick={() => finishDay(d)} scale={0.97} className="flex-1 h-14 bg-[#ff5733] rounded-[20px] font-semibold text-[1.05rem]">
@@ -398,8 +456,7 @@ export default function App() {
       <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))] space-y-3">
         {back('Home')}
         <div className="relative rounded-[28px] overflow-hidden p-6 bg-[radial-gradient(110%_100%_at_100%_0%,#1d2f4f_0%,#151a26_45%,#17171c_100%)] border border-white/[.05]">
-          <motion.div initial={{ rotate: -30, opacity: 0, scale: 0.7 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} transition={{ type: 'spring', stiffness: 200, damping: 16 }}
-            className="w-16 h-16 rounded-full bg-[#4aa8ff]/15 text-[#8fd3ff] flex items-center justify-center"><Moon size={30} /></motion.div>
+          <div className="pop w-16 h-16 rounded-full bg-[#4aa8ff]/15 text-[#8fd3ff] flex items-center justify-center"><Moon size={30} /></div>
           <h1 className="font-display text-[2.2rem] leading-none mt-5">Rest &amp; recover</h1>
           <p className="text-[#c9c9d0] mt-3 leading-relaxed">{r.description}</p>
         </div>
@@ -428,94 +485,100 @@ export default function App() {
   };
 
   // ---------- EXERCISE DETAIL ----------
-  const detail = (e: Exercise, dayId?: string) => {
-    const timed = e.sets.find((s) => s.isTimed);
+  const detail = (slot: Exercise, dayId?: string) => {
+    const e = dayId ? chosen(dayId, slot) : slot; // what's shown (may be a swap)
+    const plan = dayId ? slot : e; // sets come from the plan slot
+    const timed = plan.sets.find((s) => s.isTimed);
     const prim = e.anatomyHighlightGroups;
+    const rest = e.defaultRestSeconds || plan.defaultRestSeconds || 120;
     return (
       <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))] space-y-3">
         {back(dayId ? DAYS.find((d) => d.id === dayId)!.dayName : nav.cat ?? (q ? 'Search' : 'Exercises'))}
-        <div className={`${card} p-5`}>
-          <span className={pill}>{e.category}</span>
-          <h1 className="font-display text-[1.9rem] leading-[1.02] mt-3">{e.name}</h1>
-          <p className={`${muted} mt-2 leading-snug`}>{e.description}</p>
-        </div>
-        <FormPic key={e.id} ex={e} />
-        <div className="grid grid-cols-2 gap-3">
-          <Tap onClick={() => setSheet({ ex: e, kind: 'equip' })} scale={0.96} className={`${card} p-4 text-center active:bg-[#1d1d23]`}>
-            <div className="font-semibold mb-3">Equipment</div>
-            <div className="h-[11.5rem] flex items-center justify-center"><EquipArt kind={e.equipment.kind} h={88} /></div>
-            <div className={`${muted} text-[0.8rem] mt-1 truncate`}>{e.equipment.label}</div>
-          </Tap>
-          <Tap onClick={() => setSheet({ ex: e, kind: 'muscle' })} scale={0.96} className={`${card} p-4 text-center active:bg-[#1d1d23]`}>
-            <div className="font-semibold mb-3">Muscles</div>
-            <Body on={regionsFor(prim)} soft={regionsFor(e.secondaryGroups)} className="h-[11.5rem] w-auto mx-auto block" />
-            <div className={`${muted} text-[0.8rem] mt-1 truncate`}>{prim.map((g) => MUSCLE_LABEL[g]).join(', ') || '—'}</div>
-          </Tap>
-        </div>
-        {dayId && e.sets.length > 0 ? (
+        {dayId && <SwapBar slot={slot} shown={e} onPick={(o) => choose(dayId, slot, o)} />}
+        <div key={e.id} className="screen-in space-y-3" style={{ ['--dir' as string]: 0 }}>
           <div className={`${card} p-5`}>
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="font-display text-[1.15rem]">My sets</h2>
-              <Tap onClick={() => timer.start(e.defaultRestSeconds || 120, e.name)} scale={0.92} className="flex items-center gap-1.5 text-[#ff6a4a] text-sm font-semibold h-9 px-1">
-                <Timer size={16} /> Rest {fmt(e.defaultRestSeconds || 120)}
-              </Tap>
-            </div>
-            {e.sets.map((s) => {
-              const l = ws.setLogs[setKey(dayId, e.id, s.setNum)];
-              return (
-                <div key={s.setNum} className="flex items-center gap-3 py-1.5">
-                  <div className={`w-8 h-8 rounded-full text-[0.8rem] font-bold flex items-center justify-center shrink-0 ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#3a1d18] text-[#ff6a4a]'}`}>{s.setNum}</div>
-                  <div className="flex-1 text-[#c9c9d0]">{s.targetReps ? `${s.targetReps} reps` : s.targetDescription}</div>
-                  {s.targetReps && (
-                    <label className="flex items-center bg-[#0d0d12] rounded-xl pr-2.5 focus-within:ring-2 focus-within:ring-[#ff5733]/60">
-                      <input inputMode="decimal" placeholder="0" value={l?.weightKg ?? ''} onChange={(ev) => setKg(dayId, e, s.setNum, ev.target.value)}
-                        className="w-12 bg-transparent py-2.5 text-center outline-none tabular-nums" aria-label={`Set ${s.setNum} weight in kg`} />
-                      <span className="text-[#6b6b74] text-xs">kg</span>
-                    </label>
-                  )}
-                  <motion.button type="button" whileTap={{ scale: 0.85 }} onClick={() => toggle(dayId, e, s.setNum)} aria-label={`Mark set ${s.setNum} done`}
-                    className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-colors ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#26262e] text-[#6b6b74]'}`}>
-                    <motion.span key={String(!!l?.completed)} initial={{ scale: l?.completed ? 0.4 : 1 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 14 }}><Check size={19} strokeWidth={3} /></motion.span>
-                  </motion.button>
-                </div>
-              );
-            })}
+            <span className={pill}>{e.category}</span>
+            <h1 className="font-display text-[1.9rem] leading-[1.02] mt-3">{e.name}</h1>
+            <p className={`${muted} mt-2 leading-snug`}>{e.description}</p>
           </div>
-        ) : (
-          <div className={`${card} p-5 flex items-center gap-4`}>
-            <div className="flex-1">
-              <div className={`${muted} text-xs`}>Suggested</div>
-              <div className="font-semibold mt-0.5">{setsSummary(e)}</div>
-            </div>
-            {e.defaultRestSeconds > 0 && (
-              <Tap onClick={() => timer.start(e.defaultRestSeconds, e.name)} scale={0.94} className="flex items-center gap-1.5 h-10 px-3.5 rounded-2xl bg-[#3a1d18] text-[#ff6a4a] font-semibold text-sm">
-                <Timer size={16} /> Rest {fmt(e.defaultRestSeconds)}
-              </Tap>
-            )}
+          <div className="grid grid-cols-2 gap-3">
+            <Tap onClick={() => setSheet({ ex: e, kind: 'equip' })} scale={0.96} className={`${card} p-4 text-center`}>
+              <div className="font-semibold mb-3">Equipment</div>
+              <div className="h-[11.5rem] flex items-center justify-center"><EquipArt kind={e.equipment.kind} h={88} /></div>
+              <div className={`${muted} text-[0.8rem] mt-1 truncate`}>{e.equipment.label}</div>
+            </Tap>
+            <Tap onClick={() => setSheet({ ex: e, kind: 'muscle' })} scale={0.96} className={`${card} p-4 text-center`}>
+              <div className="font-semibold mb-3">Muscles</div>
+              <Body on={regionsFor(prim)} soft={regionsFor(e.secondaryGroups)} className="h-[11.5rem] w-auto mx-auto block" />
+              <div className={`${muted} text-[0.8rem] mt-1 truncate`}>{prim.map((g) => MUSCLE_LABEL[g]).join(', ') || '—'}</div>
+            </Tap>
           </div>
-        )}
-        {timed && <Stopwatch key={e.id} target={timed.targetSeconds} />}
-        <div className={`${card} p-5`}>
-          <h2 className="font-display text-[1.15rem] mb-4">How to do it</h2>
-          {e.stepByStep.map((s, i) => (
-            <div key={i} className="flex gap-3.5 mb-3.5 last:mb-0">
-              <div className="w-7 h-7 rounded-full bg-[#3a1d18] text-[#ff6a4a] text-[0.8rem] font-bold flex items-center justify-center shrink-0">{i + 1}</div>
-              <p className="text-[#c9c9d0] leading-relaxed pt-0.5">{s}</p>
+          {dayId && plan.sets.length > 0 ? (
+            <div className={`${card} p-5`}>
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="font-display text-[1.15rem]">My sets</h2>
+                <Tap onClick={() => timer.start(rest, e.name)} scale={0.92} className="flex items-center gap-1.5 text-[#ff6a4a] text-sm font-semibold h-9 px-1">
+                  <Timer size={16} /> Rest {fmt(rest)}
+                </Tap>
+              </div>
+              {plan.sets.map((s) => {
+                const l = ws.setLogs[setKey(dayId, slot.id, s.setNum)];
+                return (
+                  <div key={s.setNum} className="flex items-center gap-3 py-1.5">
+                    <div className={`w-8 h-8 rounded-full text-[0.8rem] font-bold flex items-center justify-center shrink-0 ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#3a1d18] text-[#ff6a4a]'}`}>{s.setNum}</div>
+                    <div className="flex-1 text-[#c9c9d0]">{s.targetReps ? `${s.targetReps} reps` : s.targetDescription}</div>
+                    {s.targetReps && (
+                      <label className="flex items-center bg-[#0d0d12] rounded-xl pr-2.5 focus-within:ring-2 focus-within:ring-[#ff5733]/60">
+                        <input inputMode="decimal" placeholder="0" value={l?.weightKg ?? ''} onChange={(ev) => setKg(dayId, slot, s.setNum, ev.target.value)}
+                          className="w-12 bg-transparent py-2.5 text-center outline-none tabular-nums" aria-label={`Set ${s.setNum} weight in kg`} />
+                        <span className="text-[#6b6b74] text-xs">kg</span>
+                      </label>
+                    )}
+                    <Tap onClick={() => toggle(dayId, slot, e, s.setNum)} scale={0.85} aria-label={`Mark set ${s.setNum} done`} aria-pressed={!!l?.completed}
+                      className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-colors ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#26262e] text-[#6b6b74]'}`}>
+                      <span key={String(!!l?.completed)} className={l?.completed ? 'pop flex' : 'flex'}><Check size={19} strokeWidth={3} /></span>
+                    </Tap>
+                  </div>
+                );
+              })}
             </div>
-          ))}
+          ) : (
+            <div className={`${card} p-5 flex items-center gap-4`}>
+              <div className="flex-1">
+                <div className={`${muted} text-xs`}>Suggested</div>
+                <div className="font-semibold mt-0.5">{setsSummary(e)}</div>
+              </div>
+              {e.defaultRestSeconds > 0 && (
+                <Tap onClick={() => timer.start(e.defaultRestSeconds, e.name)} scale={0.94} className="flex items-center gap-1.5 h-10 px-3.5 rounded-2xl bg-[#3a1d18] text-[#ff6a4a] font-semibold text-sm">
+                  <Timer size={16} /> Rest {fmt(e.defaultRestSeconds)}
+                </Tap>
+              )}
+            </div>
+          )}
+          {timed && <Stopwatch key={e.id} target={timed.targetSeconds} />}
+          <div className={`${card} p-5`}>
+            <h2 className="font-display text-[1.15rem] mb-4">How to do it</h2>
+            {e.stepByStep.map((s, i) => (
+              <div key={i} className="flex gap-3.5 mb-3.5 last:mb-0">
+                <div className="w-7 h-7 rounded-full bg-[#3a1d18] text-[#ff6a4a] text-[0.8rem] font-bold flex items-center justify-center shrink-0">{i + 1}</div>
+                <p className="text-[#c9c9d0] leading-relaxed pt-0.5">{s}</p>
+              </div>
+            ))}
+          </div>
+          {e.formTips.length > 0 && (
+            <div className={`${card} p-5`}>
+              <h2 className="font-display text-[1.15rem] mb-3">Form tips</h2>
+              {e.formTips.map((t, i) => <p key={i} className="text-[#c9c9d0] leading-relaxed mb-2.5 last:mb-0 flex gap-2.5"><CircleCheck size={18} className="text-[#4ade80] shrink-0 mt-0.5" />{t}</p>)}
+            </div>
+          )}
+          {e.commonMistakes.length > 0 && (
+            <div className={`${card} p-5`}>
+              <h2 className="font-display text-[1.15rem] mb-3">Common mistakes</h2>
+              {e.commonMistakes.map((t, i) => <p key={i} className="text-[#c9c9d0] leading-relaxed mb-2.5 last:mb-0 flex gap-2.5"><CircleAlert size={18} className="text-[#ff6a4a] shrink-0 mt-0.5" />{t}</p>)}
+            </div>
+          )}
+          <FormPic key={`pic-${e.id}`} ex={e} />
         </div>
-        {e.formTips.length > 0 && (
-          <div className={`${card} p-5`}>
-            <h2 className="font-display text-[1.15rem] mb-3">Form tips</h2>
-            {e.formTips.map((t, i) => <p key={i} className="text-[#c9c9d0] leading-relaxed mb-2.5 last:mb-0 flex gap-2.5"><CircleCheck size={18} className="text-[#4ade80] shrink-0 mt-0.5" />{t}</p>)}
-          </div>
-        )}
-        {e.commonMistakes.length > 0 && (
-          <div className={`${card} p-5`}>
-            <h2 className="font-display text-[1.15rem] mb-3">Common mistakes</h2>
-            {e.commonMistakes.map((t, i) => <p key={i} className="text-[#c9c9d0] leading-relaxed mb-2.5 last:mb-0 flex gap-2.5"><CircleAlert size={18} className="text-[#ff6a4a] shrink-0 mt-0.5" />{t}</p>)}
-          </div>
-        )}
       </div>
     );
   };
@@ -530,9 +593,9 @@ export default function App() {
           {back('Exercises')}
           <h1 className="font-display text-[2.2rem] leading-none mt-2">{nav.cat}</h1>
           <p className={`${muted} mt-1.5 mb-4`}>{exs.length} exercises</p>
-          <motion.div className="space-y-2.5" variants={list} initial="hidden" animate="show">
-            {exs.map((e) => <motion.div key={e.id} variants={item}>{row(e, `${e.equipment.label}  ·  ${setsSummary(e)}`, () => open(e))}</motion.div>)}
-          </motion.div>
+          <div className="space-y-2.5">
+            {exs.map((e) => row(e, `${e.equipment.label}  ·  ${setsSummary(e)}`, () => open(e)))}
+          </div>
         </div>
       );
     }
@@ -556,8 +619,8 @@ export default function App() {
               const n = ALL.filter((e) => e.category === c).length;
               return (
                 <Tap key={c} onClick={() => go({ tab: 'ex', cat: c })} delay={NAV_DELAY} scale={0.96}
-                  className={`${card} relative h-[8.5rem] overflow-hidden text-left active:bg-[#1d1d23]`}>
-                  <div className={`absolute flex justify-center right-[-22px] top-1 bottom-[-6px] w-[56%]`}>
+                  className={`${card} relative h-[8.5rem] overflow-hidden text-left`}>
+                  <div className="absolute right-[-22px] top-1 bottom-[-6px] w-[56%] flex justify-center">
                     {c === 'Cardio'
                       ? <div className="self-center w-16 h-16 rounded-full bg-[#3a1d18] flex items-center justify-center"><Heart size={30} className="text-[#ff5733]" fill="#ff5733" /></div>
                       : <Body view={view} on={regionsFor(on)} className="h-full w-auto" />}
@@ -580,8 +643,9 @@ export default function App() {
   const screen = exObj ? detail(exObj, day?.id) : nav.tab === 'home' ? (day ? dayScreen(day) : home()) : library();
   const screenKey = `${nav.tab}/${nav.day ?? ''}/${nav.cat ?? ''}/${nav.ex ?? ''}`;
 
+  const timerOn = sheet?.kind === 'timer';
   const tab = (id: 'home' | 'ex', label: string, Icon: typeof House) => {
-    const on = nav.tab === id && sheet?.kind !== 'timer';
+    const on = nav.tab === id && !timerOn;
     return (
       <Tap onClick={() => (nav.tab === id && depth(nav) === 1 ? window.scrollTo({ top: 0, behavior: 'smooth' }) : go({ tab: id }))} scale={0.9}
         className="flex-1 flex flex-col items-center gap-1 pt-2 pb-1" aria-label={label}>
@@ -593,7 +657,6 @@ export default function App() {
       </Tap>
     );
   };
-  const timerOn = sheet?.kind === 'timer';
 
   const onReveal = useCallback(() => setReady(true), []);
   const onSplashDone = useCallback(() => setSplash(false), []);
@@ -601,21 +664,17 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className={`min-h-screen bg-[#0d0d12] text-[#f4f4f5] max-w-md mx-auto ${timer.t ? 'pb-48' : 'pb-32'}`}>
+      <div className={`min-h-screen bg-[#0d0d12] text-[#f4f4f5] max-w-md mx-auto ${timerBase ? 'pb-48' : 'pb-32'}`}>
         {ready && (
-          <AnimatePresence mode="popLayout" initial={false} custom={dir}>
-            <motion.main key={screenKey} custom={dir}
-              initial={{ opacity: 0, x: dir * 28 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: dir * -20, transition: { duration: 0.12 } }}
-              transition={{ duration: 0.24, ease: EASE }}>
-              {screen}
-            </motion.main>
-          </AnimatePresence>
+          <main key={screenKey} className="screen-in" style={{ ['--dir' as string]: dir }}>
+            {screen}
+          </main>
         )}
 
-        <TimerDock api={timer} onExpand={() => setSheet({ kind: 'timer' })} />
+        <TimerDock onExpand={() => setSheet({ kind: 'timer' })} />
 
         <Sheet open={!!sheet} onClose={() => setSheet(null)} label={sheet?.kind === 'timer' ? 'Rest timer' : sheet?.kind === 'muscle' ? 'Muscles worked' : 'Equipment'}>
-          {sheet?.kind === 'timer' && <TimerPanel api={timer} />}
+          {sheet?.kind === 'timer' && <TimerPanel />}
           {sheet?.kind === 'muscle' && sheetEx && (
             <>
               <h2 className="font-display text-xl text-center">Muscles worked</h2>
@@ -647,14 +706,14 @@ export default function App() {
           body="This clears every ticked set and every weight you've entered for all 7 days. It can't be undone."
           confirmLabel="Reset week" onConfirm={doResetAll} onCancel={() => setConfirmReset(false)} />
 
-        <nav className="fixed bottom-0 inset-x-0 max-w-md mx-auto bg-[#0d0d12]/92 backdrop-blur-xl border-t border-white/[.05] flex px-3 pb-[calc(.5rem+env(safe-area-inset-bottom))] z-30">
+        <nav className="fixed bottom-0 inset-x-0 max-w-md mx-auto bg-[#0d0d12] border-t border-white/[.05] flex px-3 pb-[calc(.5rem+env(safe-area-inset-bottom))] z-30">
           {tab('home', 'Home', House)}
           {tab('ex', 'Exercises', Dumbbell)}
           <Tap onClick={() => setSheet({ kind: 'timer' })} scale={0.9} className="flex-1 flex flex-col items-center gap-1 pt-2 pb-1" aria-label="Timer">
             <div className="relative px-5 py-1.5">
               {timerOn && <motion.div layoutId="tabpill" className="absolute inset-0 rounded-full bg-[#3a1d18]" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
-              <Timer size={21} className={`relative ${timerOn || timer.running ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`} />
-              {timer.running && <span className="absolute top-1 right-4 w-2 h-2 rounded-full bg-[#ff5733] animate-pulse" />}
+              <Timer size={21} className={`relative ${timerOn || timerBase?.endAt ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`} />
+              {timerBase?.endAt ? <span className="absolute top-1 right-4 w-2 h-2 rounded-full bg-[#ff5733]" /> : null}
             </div>
             <span className={`text-[0.72rem] font-medium ${timerOn ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`}>Timer</span>
           </Tap>
@@ -672,7 +731,7 @@ function ResetButton({ onClick }: { onClick: () => void }) {
   return (
     <Tap onClick={() => { setSpin((s) => s - 360); window.setTimeout(onClick, 140); }} scale={0.88}
       className="w-11 h-11 rounded-full bg-[#17171c] border border-white/[.06] flex items-center justify-center text-[#c9c9d0]" aria-label="Reset week">
-      <motion.span animate={{ rotate: spin }} transition={{ duration: 0.5, ease: EASE }} className="flex"><RotateCcw size={18} /></motion.span>
+      <span className="flex" style={{ transform: `rotate(${spin}deg)`, transition: 'transform .5s cubic-bezier(.22,1,.36,1)' }}><RotateCcw size={18} /></span>
     </Tap>
   );
 }

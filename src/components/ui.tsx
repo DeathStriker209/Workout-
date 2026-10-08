@@ -1,28 +1,31 @@
 import React, { useEffect } from 'react';
-import { AnimatePresence, HTMLMotionProps, motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 
 // Shared easing: fast start, soft landing (same family as iOS/Android sheets)
 export const EASE = [0.22, 1, 0.36, 1] as const;
 
-type TapProps = HTMLMotionProps<'button'> & {
+type TapProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   /** ms to wait before running onClick, so the shrink-and-bounce is visible before the screen changes */
   delay?: number;
   scale?: number;
 };
 
-/** Any tappable thing: shrinks while pressed, springs back on release. */
+/**
+ * Any tappable thing: shrinks while pressed, springs back on release.
+ * Pure CSS (see .tap in index.css) so it runs on the GPU and stays smooth on older phones.
+ */
 export const Tap = React.forwardRef<HTMLButtonElement, TapProps>(function Tap(
-  { delay = 0, scale = 0.95, onClick, type = 'button', ...rest }, ref,
+  { delay = 0, scale = 0.95, onClick, type = 'button', className = '', style, ...rest }, ref,
 ) {
   return (
-    <motion.button
+    <button
       ref={ref}
       type={type}
-      whileTap={{ scale }}
-      transition={{ type: 'spring', stiffness: 700, damping: 30, mass: 0.6 }}
+      className={`tap ${className}`}
+      style={{ ...style, ['--tap' as string]: scale }}
       onClick={(e) => {
         if (!onClick) return;
-        if (delay) { e.persist?.(); window.setTimeout(() => onClick(e), delay); } else onClick(e);
+        if (delay) window.setTimeout(() => onClick(e), delay); else onClick(e);
       }}
       {...rest}
     />
@@ -44,7 +47,7 @@ export function Sheet({ open, onClose, children, label }: { open: boolean; onClo
           <motion.div className="absolute inset-0 bg-black/65" onClick={onClose}
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} />
           <motion.div
-            className="relative w-full max-w-md bg-[#121217] rounded-t-[28px] px-5 pt-3 pb-[calc(2rem+env(safe-area-inset-bottom))] border-t border-white/5 shadow-[0_-20px_60px_rgba(0,0,0,.5)]"
+            className="relative w-full max-w-md bg-[#121217] rounded-t-[28px] px-5 pt-3 pb-[calc(2rem+env(safe-area-inset-bottom))] border-t border-white/5 "
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ duration: 0.32, ease: EASE }}
             drag="y" dragConstraints={{ top: 0, bottom: 0 }} dragElastic={{ top: 0, bottom: 0.7 }}
@@ -68,7 +71,7 @@ export function Confirm({ open, icon, title, body, confirmLabel, onConfirm, onCa
     <AnimatePresence>
       {open && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center px-6" role="alertdialog" aria-modal="true" aria-label={title}>
-          <motion.div className="absolute inset-0 bg-black/70 backdrop-blur-[2px]" onClick={onCancel}
+          <motion.div className="absolute inset-0 bg-black/75" onClick={onCancel}
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }} />
           <motion.div className="relative w-full max-w-[340px] bg-[#17171c] border border-white/5 rounded-[28px] p-6 text-center"
             initial={{ opacity: 0, scale: 0.88, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.94, y: 6 }}

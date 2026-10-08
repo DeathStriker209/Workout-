@@ -94,4 +94,6 @@ export interface WorkoutState {
   setLogs: Record<string, CompletedSetLog>;
   // Map of `${dayId}` -> session status
   completedDays: Record<string, { completedAt: string; completedSets: number; totalSets: number }>;
+  // Map of `${dayId}_${plannedExerciseId}` -> id of the swap option picked (absent = option A)
+  swaps?: Record<string, string>;
 }

@@ -26,6 +26,25 @@ button { cursor: pointer; touch-action: manipulation; user-select: none; -webkit
 :focus-visible { outline: 2px solid #ff5733; outline-offset: 2px; border-radius: 12px; }
 img { -webkit-user-drag: none; }
 
+/* Press animation for every tappable thing: quick shrink, soft spring back.
+   Only `transform` changes, so the GPU handles it even on older phones. */
+.tap { transition: transform .22s cubic-bezier(.34, 1.56, .64, 1); }
+.tap:active { transform: scale(var(--tap, .95)); transition: transform .08s ease-out; }
+
+/* New screen slides in. --dir is 1 (going deeper), -1 (going back) or 0 (switching tab). */
+@keyframes screen-in { from { opacity: 0; transform: translate3d(calc(var(--dir, 0) * 22px), 0, 0); } }
+.screen-in { animation: screen-in .22s cubic-bezier(.22, 1, .36, 1) both; }
+
+/* Home screen cards rise in one after another; --i is the card's position. */
+@keyframes rise { from { opacity: 0; transform: translate3d(0, 14px, 0); } }
+.rise { animation: rise .38s cubic-bezier(.22, 1, .36, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
+
+@keyframes pop { from { transform: scale(.7); } 60% { transform: scale(1.08); } }
+.pop { animation: pop .35s ease-out both; }
+
+/* Progress bars grow with a transform instead of width (no layout work) */
+.bar { transform-origin: left; transition: transform .6s cubic-bezier(.22, 1, .36, 1); }
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0.01ms !important; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-delay: 0ms !important; }
 }

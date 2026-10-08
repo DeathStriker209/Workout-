@@ -29,7 +29,7 @@ export function Splash({ onReveal, onDone }: { onReveal: () => void; onDone: () 
     >
       {/* blue flood, grows from the logo's centre */}
       <motion.div
-        className="absolute left-1/2 top-1/2 w-[260vmax] h-[260vmax] rounded-full"
+        className="absolute left-1/2 top-1/2 w-[125vmax] h-[125vmax] rounded-full will-change-transform"
         style={{ x: '-50%', y: '-50%', background: 'linear-gradient(45deg, #2f96ff 30%, #77ccff 70%)' }}
         initial={{ scale: 0 }}
         animate={{ scale: phase === 'rise' ? 0 : 1 }}
@@ -38,11 +38,9 @@ export function Splash({ onReveal, onDone }: { onReveal: () => void; onDone: () 
       <div className="relative flex flex-col items-center">
         <motion.img
           src="/logo.png" alt=""
-          className="w-28 h-28 rounded-[30px]"
+          className="w-28 h-28 rounded-[30px] will-change-transform"
           initial={{ y: '55vh', scale: 0.7, opacity: 0 }}
-          animate={phase === 'rise'
-            ? { y: 0, scale: 1, opacity: 1, boxShadow: '0 24px 60px rgba(47,150,255,.45)' }
-            : { y: -14, scale: 1.08, opacity: 1, boxShadow: '0 0 0 rgba(47,150,255,0)' }}
+          animate={phase === 'rise' ? { y: 0, scale: 1, opacity: 1 } : { y: -14, scale: 1.08, opacity: 1 }}
           transition={phase === 'rise'
             ? { type: 'spring', stiffness: 190, damping: 17, mass: 0.9 }
             : { duration: 0.6, ease: EASE }}
