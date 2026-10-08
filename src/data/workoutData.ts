@@ -1,7 +1,11 @@
-import { DayWorkout } from '../types/workout';
+import { Category, DayWorkout, EquipKind, Exercise, MuscleGroup } from '../types/workout';
 import { getExercisePhotos } from './exercisePhotos';
 
-const RAW_WORKOUT_DAYS: DayWorkout[] = [
+// Raw entries: muscles, category and equipment are set in META below so they stay easy to audit.
+type RawExercise = Omit<Exercise, 'category' | 'equipment' | 'anatomyHighlightGroups'> & { anatomyHighlightGroups: string[] };
+type RawDay = Omit<DayWorkout, 'exercises'> & { exercises: RawExercise[] };
+
+const RAW_WORKOUT_DAYS: RawDay[] = [
   // DAY 1: MONDAY - LIFT A
   {
     id: 'day-1',
@@ -1115,7 +1119,7 @@ const RAW_WORKOUT_DAYS: DayWorkout[] = [
           'Rest forearm flat on a bench with wrist extending past the edge, thumb pointing upward.',
           'Slowly rotate forearm outward so palm faces up (supination) under control.',
           'Rotate smoothly back through neutral to rotate inward so palm faces down (pronation).',
-          'Complete prescribed reps for each direction, then switch arms.'
+          'Complete prescribed reps for each direction, then switch arms. (The animation shows the side-lying version: same rotation, same muscles.)'
         ],
         formTips: [
           'Keep elbow and upper arm completely stationary.',
@@ -1279,32 +1283,57 @@ const RAW_WORKOUT_DAYS: DayWorkout[] = [
   }
 ];
 
-// Attach photos to all exercises
-RAW_WORKOUT_DAYS.forEach((day) => {
-  day.exercises.forEach((ex) => {
-    ex.photos = getExercisePhotos(ex.id);
-  });
-});
+type Meta = { cat: Category; eq: [string, EquipKind]; p: MuscleGroup[]; s?: MuscleGroup[]; hide?: boolean };
+const BIKE: Meta = { cat: 'Cardio', eq: ['Exercise bike', 'bike'], p: ['cardio', 'quadriceps'], s: ['glutes', 'hamstrings', 'calves'] };
 
-export const WORKOUT_DAYS: DayWorkout[] = RAW_WORKOUT_DAYS;
-
-// Helper to calculate total sets for a day
-export function getTotalSetsForDay(day: DayWorkout): number {
-  return day.exercises.reduce((acc, ex) => acc + ex.sets.length, 0);
-}
-
-// Muscle descriptions and anatomical mappings
-export const MUSCLE_METADATA: Record<string, { label: string; area: string; description: string }> = {
-  quadriceps: { label: 'Quadriceps', area: 'Lower Body', description: 'Four-headed knee extensor group on anterior thigh.' },
-  hamstrings: { label: 'Hamstrings', area: 'Lower Body', description: 'Three posterior thigh muscles responsible for hip extension and knee flexion.' },
-  glutes: { label: 'Glutes', area: 'Hips & Posterior', description: 'Gluteus maximus/medius powering hip extension and pelvic stability.' },
-  calves: { label: 'Calves', area: 'Lower Leg', description: 'Gastrocnemius and soleus driving ankle plantarflexion.' },
-  chest: { label: 'Chest (Pectorals)', area: 'Upper Body Push', description: 'Pectoralis major & minor powering horizontal pushing and adduction.' },
-  back: { label: 'Back (Lats & Traps)', area: 'Upper Body Pull', description: 'Latissimus dorsi, rhomboids, and middle/lower traps driving pulling mechanics.' },
-  shoulders: { label: 'Shoulders (Deltoids)', area: 'Upper Body', description: 'Anterior, lateral, and posterior deltoid heads creating 3D shoulder shape.' },
-  biceps: { label: 'Biceps & Brachialis', area: 'Arms', description: 'Elbow flexors and forearm supinators.' },
-  triceps: { label: 'Triceps Brachii', area: 'Arms', description: 'Three-headed extensor comprising two-thirds of upper arm mass.' },
-  abs: { label: 'Core & Abdominals', area: 'Torso', description: 'Rectus abdominis, obliques, and transverse stabilizers.' },
-  forearms: { label: 'Forearms & Grip', area: 'Arms & Grip', description: 'Flexor, extensor, and brachioradialis muscles for crushing grip strength.' },
-  cardio: { label: 'Cardiovascular System', area: 'Systemic', description: 'Heart, lungs, and mitochondrial vascular bed for aerobic stamina.' }
+// Primary (bright) and secondary (dim) muscles for every plan exercise
+const META: Record<string, Meta> = {
+  'leg-press': { cat: 'Legs', eq: ['Leg press machine', 'machine'], p: ['quadriceps', 'glutes'], s: ['hamstrings', 'adductors'] },
+  'lat-pulldown-a': { cat: 'Back', eq: ['Lat pulldown machine', 'pulldown'], p: ['lats'], s: ['upperback', 'biceps', 'reardelts', 'forearms'] },
+  'smith-machine-bench-press': { cat: 'Chest', eq: ['Smith machine', 'barbell'], p: ['chest'], s: ['triceps', 'shoulders'] },
+  'shoulder-press-a': { cat: 'Shoulders', eq: ['Dumbbells + bench', 'dumbbell'], p: ['shoulders'], s: ['triceps', 'traps'] },
+  'lateral-raise-a': { cat: 'Shoulders', eq: ['Dumbbells', 'dumbbell'], p: ['shoulders'], s: ['traps'] },
+  'cable-crunch': { cat: 'Core', eq: ['Cable + rope', 'cable'], p: ['abs'], s: ['obliques'] },
+  'overhead-tricep-extension': { cat: 'Triceps', eq: ['Cable + rope', 'cable'], p: ['triceps'] },
+  'reverse-curl': { cat: 'Forearms', eq: ['Barbell / EZ bar', 'barbell'], p: ['forearms'], s: ['biceps'] },
+  'f-wrist-curls': { cat: 'Forearms', eq: ['Dumbbells + bench', 'dumbbell'], p: ['forearms'] },
+  'f-farmers-carries': { cat: 'Forearms', eq: ['Heavy dumbbells', 'dumbbell'], p: ['forearms', 'traps'], s: ['abs', 'obliques', 'upperback', 'quadriceps', 'calves'] },
+  'f-plate-pinch-hold': { cat: 'Forearms', eq: ['Weight plates', 'plate'], p: ['forearms'] },
+  'cycle-session-day-2': BIKE,
+  'sldl': { cat: 'Legs', eq: ['Barbell', 'barbell'], p: ['hamstrings', 'glutes'], s: ['lowerback', 'forearms', 'traps'] },
+  'seated-cable-row': { cat: 'Back', eq: ['Cable + V-bar', 'cable'], p: ['lats', 'upperback'], s: ['biceps', 'reardelts', 'traps', 'forearms'] },
+  'pec-deck': { cat: 'Chest', eq: ['Pec deck machine', 'machine'], p: ['chest'], s: ['shoulders'] },
+  'rear-delt-fly': { cat: 'Shoulders', eq: ['Reverse pec deck', 'machine'], p: ['reardelts'], s: ['upperback', 'traps'] },
+  'jm-press': { cat: 'Triceps', eq: ['Barbell + bench', 'barbell'], p: ['triceps'], s: ['chest', 'shoulders'] },
+  'rope-pushdown': { cat: 'Triceps', eq: ['Cable + rope', 'cable'], p: ['triceps'] },
+  'hammer-curl': { cat: 'Biceps', eq: ['Dumbbells', 'dumbbell'], p: ['biceps', 'forearms'] },
+  'cycle-session-day-4': { ...BIKE, hide: true },
+  'leg-extension': { cat: 'Legs', eq: ['Leg extension machine', 'machine'], p: ['quadriceps'] },
+  'lying-hamstring-curl': { cat: 'Legs', eq: ['Lying leg curl machine', 'machine'], p: ['hamstrings'], s: ['calves'] },
+  'lat-pulldown-c': { cat: 'Back', eq: ['Lat pulldown machine', 'pulldown'], p: ['lats'], s: ['upperback', 'biceps', 'reardelts', 'forearms'] },
+  'shoulder-press-or-lateral-raise': { cat: 'Shoulders', eq: ['Dumbbells', 'dumbbell'], p: ['shoulders'], s: ['triceps', 'traps'], hide: true },
+  'preacher-curl': { cat: 'Biceps', eq: ['Preacher curl machine', 'machine'], p: ['biceps'], s: ['forearms'] },
+  'incline-dumbbell-curl': { cat: 'Biceps', eq: ['Dumbbells + incline bench', 'dumbbell'], p: ['biceps'], s: ['forearms'] },
+  'f-reverse-wrist-curls': { cat: 'Forearms', eq: ['Dumbbells + bench', 'dumbbell'], p: ['forearms'] },
+  'f-pronation-supination-curls': { cat: 'Forearms', eq: ['Dumbbell', 'dumbbell'], p: ['forearms'], s: ['biceps'] },
+  'f-cable-hook-position-hold': { cat: 'Forearms', eq: ['Cable + handle', 'cable'], p: ['forearms'], s: ['biceps'] },
+  'cycle-session-day-6': { ...BIKE, hide: true },
+  'full-rest-protocol': { cat: 'Cardio', eq: ['None', 'bodyweight'], p: [], hide: true },
 };
+
+export const WORKOUT_DAYS: DayWorkout[] = RAW_WORKOUT_DAYS.map((day) => ({
+  ...day,
+  exercises: day.exercises.map((ex) => {
+    const m = META[ex.id];
+    return {
+      ...ex,
+      category: m.cat,
+      equipment: { label: m.eq[0], kind: m.eq[1] },
+      anatomyHighlightGroups: m.p,
+      secondaryGroups: m.s ?? [],
+      hideInLibrary: m.hide,
+      photos: getExercisePhotos(ex.id),
+    };
+  }),
+}));
+

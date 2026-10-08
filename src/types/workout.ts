@@ -1,18 +1,31 @@
+// Muscle regions drawn on the body map (see components/Body.tsx)
 export type MuscleGroup =
   | 'chest'
-  | 'back'
-  | 'shoulders'
+  | 'shoulders' // front & side delts
+  | 'reardelts'
+  | 'traps'
+  | 'lats'
+  | 'upperback' // rhomboids, teres, infraspinatus
+  | 'lowerback' // erector spinae
   | 'biceps'
   | 'triceps'
-  | 'arms'
+  | 'forearms'
+  | 'abs'
+  | 'obliques'
   | 'quadriceps'
   | 'hamstrings'
   | 'glutes'
   | 'calves'
-  | 'legs'
-  | 'abs'
-  | 'forearms'
+  | 'adductors'
+  | 'abductors'
   | 'cardio';
+
+export type Category =
+  | 'Chest' | 'Back' | 'Shoulders' | 'Biceps' | 'Triceps' | 'Forearms' | 'Legs' | 'Core' | 'Cardio';
+
+export type EquipKind =
+  | 'barbell' | 'dumbbell' | 'cable' | 'machine' | 'pulldown' | 'bodyweight' | 'bar'
+  | 'bike' | 'treadmill' | 'rope' | 'wheel' | 'plate' | 'bench';
 
 export interface ExerciseSet {
   setNum: number;
@@ -30,34 +43,38 @@ export interface ExercisePhoto {
 export interface Exercise {
   id: string;
   name: string;
+  category: Category;
+  equipment: { label: string; kind: EquipKind };
   isForearmGrip?: boolean; // For (F) tag
-  alternatives?: string[]; // e.g. "Shoulder press or lateral raise"
-  targetArea: string; // e.g. "Upper Back & Lats"
-  primaryMuscles: string[]; // e.g. ["Latissimus Dorsi", "Teres Major"]
-  secondaryMuscles: string[]; // e.g. ["Biceps Brachii", "Rhomboids"]
-  anatomyHighlightGroups: MuscleGroup[];
+  hideInLibrary?: boolean; // plan-only duplicates
+  alternatives?: string[];
+  targetArea: string;
+  primaryMuscles: string[];
+  secondaryMuscles: string[];
+  anatomyHighlightGroups: MuscleGroup[]; // primary movers (bright on the map)
+  secondaryGroups?: MuscleGroup[]; // helpers (dim on the map)
   sets: ExerciseSet[];
-  defaultRestSeconds: number; // e.g. 90
+  defaultRestSeconds: number;
   description: string;
   stepByStep: string[];
   formTips: string[];
   commonMistakes: string[];
-  photos?: ExercisePhoto[]; // Real step-by-step exercise photos from internet
-  videoEmbedId?: string; // YouTube video ID or demonstration reference
+  photos?: ExercisePhoto[];
+  videoEmbedId?: string;
   videoSearchQuery?: string;
-  visualDemonstration: {
+  visualDemonstration?: {
     type: 'illustration' | 'animation';
     movementPlane: string;
-    tempo: string; // e.g. "2-0-1-0"
+    tempo: string;
   };
 }
 
 export interface DayWorkout {
   id: string;
   dayNumber: number;
-  dayName: string; // "Monday", "Tuesday", etc.
-  shortDay: string; // "Mon", "Tue", etc.
-  title: string; // "Lift A", "Cardio", "Lift B", etc.
+  dayName: string;
+  shortDay: string;
+  title: string;
   category: 'lift' | 'cardio' | 'rest';
   subtitle: string;
   focusAreas: string[];
@@ -72,18 +89,9 @@ export interface CompletedSetLog {
   completedAt?: string;
 }
 
-// Workout session storage schema
 export interface WorkoutState {
   // Map of `${dayId}_${exerciseId}_set_${setNum}` -> CompletedSetLog
   setLogs: Record<string, CompletedSetLog>;
   // Map of `${dayId}` -> session status
   completedDays: Record<string, { completedAt: string; completedSets: number; totalSets: number }>;
-  activeDayId: string;
-  selectedExerciseModalId: string | null;
-  currentRestTimer: {
-    active: boolean;
-    remainingSeconds: number;
-    initialSeconds: number;
-    exerciseName?: string;
-  } | null;
 }

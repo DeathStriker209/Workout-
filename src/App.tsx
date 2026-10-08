@@ -1,199 +1,231 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import confetti from 'canvas-confetti';
-import { Calendar, Dumbbell, Timer, ChevronLeft, ChevronRight, Check, RotateCcw, Search, Pause, Play, X } from 'lucide-react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import {
+  BedDouble, Check, ChevronLeft, ChevronRight, Droplets, Dumbbell, Footprints, Heart, House, Moon, RotateCcw,
+  Search, Timer, Utensils, X, Ban, CircleAlert, CircleCheck, Play,
+} from 'lucide-react';
 import { WORKOUT_DAYS as DAYS } from './data/workoutData';
-import { DayWorkout, Exercise, WorkoutState, CompletedSetLog } from './types/workout';
-import { Body, regionsFor } from './components/Body';
-import { EquipArt, equipOf } from './components/Equip';
+import { LIBRARY_EXERCISES } from './data/exerciseLibrary';
+import { Category, CompletedSetLog, DayWorkout, Exercise, MuscleGroup, WorkoutState } from './types/workout';
+import { Body, MUSCLE_LABEL, regionsFor } from './components/Body';
+import { EquipArt } from './components/Equip';
+import { Splash } from './components/Splash';
+import { Confirm, EASE, Sheet, Tap } from './components/ui';
+import { TimerDock, TimerPanel, fmt, useRestTimer } from './components/RestTimer';
 import { playChime } from './utils/audio';
 
 const KEY = 'apexlift_workout_tracker_state_v4';
-const card = 'bg-[#17171c] rounded-3xl p-5';
-const tag = 'inline-block text-[10px] font-bold tracking-wider uppercase text-[#ff5733] bg-[#3a1d18] rounded-xl px-3 py-2';
-const badge = 'rounded-full bg-[#3a1d18] text-[#ff5733] font-bold flex items-center justify-center shrink-0';
-const blank: WorkoutState = { setLogs: {}, completedDays: {}, activeDayId: 'day-1', selectedExerciseModalId: null, currentRestTimer: null };
+const blank: WorkoutState = { setLogs: {}, completedDays: {} };
 
-type Nav = { tab: 'home' | 'ex'; day?: string; cat?: string; ex?: string };
+// ---------- design tokens (kept as class strings so Tailwind can see them) ----------
+const card = 'bg-[#17171c] rounded-[24px] border border-white/[.04]';
+const pill = 'inline-flex items-center gap-1.5 text-xs font-semibold text-[#ff6a4a] bg-[#3a1d18] rounded-full px-3 py-1.5';
+const muted = 'text-[#9a9aa3]';
+const NAV_DELAY = 60; // ms: lets the press animation show before the screen changes
 
-const CATS = ['Biceps', 'Triceps', 'Chest', 'Back', 'Legs', 'Forearms', 'Core', 'Cardio', 'Shoulders', 'Other'];
-const FALLBACK: Record<string, string> = {
-  Biceps: '#b45309', Triceps: '#9a3412', Chest: '#991b1b', Back: '#1d4ed8', Legs: '#7c3aed',
-  Forearms: '#0f766e', Core: '#be185d', Cardio: '#0369a1', Shoulders: '#4d7c0f', Other: '#52525b',
-};
-const GROUP: Record<string, string> = {
-  biceps: 'Biceps', arms: 'Biceps', triceps: 'Triceps', chest: 'Chest', back: 'Back', shoulders: 'Shoulders',
-  forearms: 'Forearms', abs: 'Core', cardio: 'Cardio', quadriceps: 'Legs', hamstrings: 'Legs',
-  glutes: 'Legs', calves: 'Legs', legs: 'Legs',
-};
+type Nav = { tab: 'home' | 'ex'; day?: string; cat?: Category; ex?: string };
+const depth = (n: Nav) => (n.ex ? 3 : n.day || n.cat ? 2 : 1);
 const parentOf = (n: Nav): Nav | null =>
   n.ex ? { tab: n.tab, day: n.day, cat: n.cat }
   : n.day ? { tab: 'home' }
   : n.cat ? { tab: 'ex' }
   : n.tab === 'ex' ? { tab: 'home' }
   : null;
-const catOf = (e: Exercise) => (e.isForearmGrip ? 'Forearms' : GROUP[e.anatomyHighlightGroups[0]] ?? 'Other');
 
-const ALL: Exercise[] = [];
-const seen = new Set<string>();
-DAYS.filter((d) => d.category !== 'rest').forEach((d) =>
-  d.exercises.forEach((e) => { if (!seen.has(e.name)) { seen.add(e.name); ALL.push(e); } })
-);
-const catPhoto = (c: string) => ALL.find((e) => catOf(e) === c && e.photos?.length)?.photos?.[0].url;
+// ---------- exercise catalogue ----------
+const PLAN_EX: Exercise[] = [];
+{
+  const seen = new Set<string>();
+  DAYS.forEach((d) => d.exercises.forEach((e) => {
+    if (e.hideInLibrary || seen.has(e.name)) return;
+    seen.add(e.name); PLAN_EX.push(e);
+  }));
+}
+const ALL: Exercise[] = [...PLAN_EX, ...LIBRARY_EXERCISES];
+const BY_ID = new Map<string, Exercise>();
+DAYS.forEach((d) => d.exercises.forEach((e) => BY_ID.set(e.id, e)));
+ALL.forEach((e) => BY_ID.set(e.id, e));
 
-const totalSets = (d: DayWorkout) => d.exercises.reduce((a, e) => a + e.sets.length, 0);
+const CATS: { c: Category; view: 'front' | 'back' | 'frontUpper' | 'backUpper' | 'frontLower'; on: MuscleGroup[] }[] = [
+  { c: 'Chest', view: 'frontUpper', on: ['chest'] },
+  { c: 'Back', view: 'backUpper', on: ['lats', 'upperback', 'traps', 'lowerback'] },
+  { c: 'Shoulders', view: 'frontUpper', on: ['shoulders'] },
+  { c: 'Biceps', view: 'frontUpper', on: ['biceps'] },
+  { c: 'Triceps', view: 'backUpper', on: ['triceps'] },
+  { c: 'Forearms', view: 'frontUpper', on: ['forearms'] },
+  { c: 'Legs', view: 'frontLower', on: ['quadriceps', 'adductors', 'abductors', 'calves'] },
+  { c: 'Core', view: 'frontUpper', on: ['abs', 'obliques'] },
+  { c: 'Cardio', view: 'front', on: [] },
+];
+
+const TRAINING_DAYS = DAYS.filter((d) => d.category !== 'rest');
+const setKey = (d: string, e: string, n: number) => `${d}_${e}_set_${n}`;
+const totalSets = (d: DayWorkout) => (d.category === 'rest' ? 0 : d.exercises.reduce((a, e) => a + e.sets.length, 0));
 const doneSets = (d: DayWorkout, logs: Record<string, CompletedSetLog>) =>
-  d.exercises.reduce((a, e) => a + e.sets.filter((s) => logs[`${d.id}_${e.id}_set_${s.setNum}`]?.completed).length, 0);
-const NAME: Record<string, string> = { abs: 'Core', quadriceps: 'Quadriceps', back: 'Back', cardio: 'Cardio' };
-const simpleNames = (groups: string[]) => [...new Set(groups.map((g) => NAME[g] ?? g.charAt(0).toUpperCase() + g.slice(1)))];
+  d.category === 'rest' ? 0 : d.exercises.reduce((a, e) => a + e.sets.filter((s) => logs[setKey(d.id, e.id, s.setNum)]?.completed).length, 0);
+const exDone = (d: DayWorkout, e: Exercise, logs: Record<string, CompletedSetLog>) =>
+  e.sets.length > 0 && e.sets.every((s) => logs[setKey(d.id, e.id, s.setNum)]?.completed);
+const setsSummary = (e: Exercise) => {
+  const r = e.sets.map((s) => s.targetReps).filter(Boolean) as string[];
+  if (r.length) return `${e.sets.length} × ${new Set(r).size === 1 ? r[0] : r.join(' / ')} reps`;
+  const t = e.sets[0];
+  if (t?.isTimed && t.targetSeconds) return e.sets.length > 1 ? `${e.sets.length} × ${t.targetSeconds}s` : `${Math.round(t.targetSeconds / 60)} min`;
+  return t?.targetDescription ?? '';
+};
+const todayNumber = () => ((new Date().getDay() + 6) % 7) + 1;
 
-// ---------- Rest timer (docked above the nav bar) ----------
-function RestTimer({ s, n, onClose }: { s: number; n: string; onClose: () => void }) {
-  const [left, setLeft] = useState(s);
-  const [total, setTotal] = useState(s);
-  const [run, setRun] = useState(true);
-  useEffect(() => {
-    if (!run) return;
-    const t = setInterval(() => setLeft((l) => {
-      if (l > 1) return l - 1;
-      clearInterval(t); setRun(false);
-      playChime(880, 0.4); setTimeout(() => playChime(1320, 0.5), 200);
-      try { navigator.vibrate?.(300); } catch { /* ignore */ }
-      return 0;
-    }), 1000);
-    return () => clearInterval(t);
-  }, [run]);
-  const adj = (d: number) => { setLeft((l) => Math.max(1, l + d)); setTotal((t) => Math.max(t, left + d)); setRun(true); };
-  const btn = 'bg-[#2a2a31] rounded-xl px-3 py-2 text-xs font-bold';
+// ---------- small pieces ----------
+/** Exercise thumbnail: GIF, then photo, then equipment drawing. */
+function Thumb({ ex, size = 56 }: { ex: Exercise; size?: number }) {
+  const [step, setStep] = useState(0);
+  const src = step === 0 ? `/exercise-gifs/${ex.id}.gif` : step === 1 ? ex.photos?.[0]?.url : undefined;
   return (
-    <div className="fixed inset-x-0 bottom-[5.4rem] max-w-md mx-auto px-4 z-40">
-      <div className="bg-[#1e1e25] border border-[#2c2c35] rounded-2xl p-3 shadow-2xl">
-        <div className="h-1 bg-[#2c2c35] rounded-full mb-3 overflow-hidden">
-          <div className="h-full bg-[#ff5733] transition-all" style={{ width: `${Math.min(100, (left / total) * 100)}%` }} />
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="text-2xl font-bold tabular-nums text-[#ff5733] w-16">{Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}</div>
-          <div className="flex-1 min-w-0 text-xs text-gray-400 truncate">{left === 0 ? 'Rest over!' : `Rest · ${n}`}</div>
-          <button onClick={() => adj(-10)} className={btn}>-10s</button>
-          <button onClick={() => adj(10)} className={btn}>+10s</button>
-          <button onClick={() => (left === 0 ? (setLeft(total), setRun(true)) : setRun(!run))} className="bg-[#ff5733] rounded-xl p-2">
-            {run ? <Pause size={16} /> : <Play size={16} />}
-          </button>
-          <button onClick={onClose} className="p-1 text-gray-500"><X size={18} /></button>
-        </div>
-      </div>
+    <div className="rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center" style={{ width: size, height: size }}>
+      {src ? <img src={src} alt="" loading="lazy" className="w-full h-full object-contain" onError={() => setStep((s) => (s === 0 && ex.photos?.length ? 1 : 2))} />
+        : <div className="w-full h-full bg-[#26262e] flex items-center justify-center"><EquipArt kind={ex.equipment.kind} h={size * 0.55} /></div>}
     </div>
   );
 }
 
-// ---------- Hold stopwatch ----------
-function Stopwatch({ target }: { target?: number }) {
-  const [t, setT] = useState(0);
-  const [on, setOn] = useState(false);
-  useEffect(() => { if (!on) return; const i = setInterval(() => setT((x) => x + 1), 1000); return () => clearInterval(i); }, [on]);
-  useEffect(() => { if (target && t === target) playChime(780, 0.3); }, [t, target]);
-  return (
-    <div className={`${card} flex items-center gap-3 !py-4`}>
-      <div className="flex-1">
-        <div className="text-xs text-gray-400">Hold timer{target ? ` · target ${target}s` : ''}</div>
-        <div className="text-2xl font-bold tabular-nums">{Math.floor(t / 60)}:{String(t % 60).padStart(2, '0')}</div>
-      </div>
-      <button onClick={() => setOn(!on)} className="bg-[#ff5733] rounded-xl px-4 py-2 font-bold text-sm">{on ? 'Stop' : 'Start'}</button>
-      <button onClick={() => { setOn(false); setT(0); }} className="bg-[#2a2a31] rounded-xl p-2.5"><RotateCcw size={16} /></button>
-    </div>
-  );
-}
-
-// ---------- Form photo: full-width white card, flips between positions ----------
-function FormPic({ id, photos }: { id: string; photos: { url: string; label: string }[] }) {
+/** Big form demo: animated GIF, falling back to the two-position photos. */
+function FormPic({ ex }: { ex: Exercise }) {
+  const photos = ex.photos ?? [];
   const [i, setI] = useState(0);
-  const [bad, setBad] = useState(false);
   const [noGif, setNoGif] = useState(false);
+  const [bad, setBad] = useState(false);
   useEffect(() => {
-    if (photos.length < 2) return;
+    if (!noGif || photos.length < 2) return;
     const t = setInterval(() => setI((x) => (x + 1) % photos.length), 1000);
     return () => clearInterval(t);
-  }, [photos.length]);
+  }, [noGif, photos.length]);
   if (!noGif)
     return (
-      <div className="bg-white rounded-3xl overflow-hidden">
-        <img src={`/exercise-gifs/${id}.gif`} alt="" className="w-full max-h-[17rem] object-contain block mx-auto" onError={() => setNoGif(true)} />
+      <div className="bg-white rounded-[24px] overflow-hidden">
+        <img src={`/exercise-gifs/${ex.id}.gif`} alt={`${ex.name} demonstration`} className="w-full max-h-[19rem] object-contain block mx-auto" onError={() => setNoGif(true)} />
       </div>
     );
-  if (bad) return null;
+  if (bad || !photos.length) return null;
   return (
-    <div className="relative bg-white rounded-3xl overflow-hidden">
+    <div className="relative bg-white rounded-[24px] overflow-hidden">
       {photos.map((p, k) => (
         <img key={p.url} src={p.url} alt={p.label} onError={() => setBad(true)}
-          className={`w-full block ${k ? 'absolute inset-0 h-full object-contain' : ''}`} style={{ opacity: i === k ? 1 : 0 }} />
+          className={`w-full block transition-opacity duration-300 ${k ? 'absolute inset-0 h-full object-contain' : ''}`} style={{ opacity: i === k ? 1 : 0 }} />
       ))}
     </div>
   );
 }
 
+function Stopwatch({ target }: { target?: number }) {
+  const [start, setStart] = useState<number | null>(null);
+  const [base, setBase] = useState(0);
+  const [, force] = useState(0);
+  useEffect(() => { if (start === null) return; const i = setInterval(() => force((x) => x + 1), 250); return () => clearInterval(i); }, [start]);
+  const t = base + (start ? Math.floor((Date.now() - start) / 1000) : 0);
+  const hit = useRef(false);
+  useEffect(() => { if (target && t >= target && !hit.current) { hit.current = true; playChime(780, 0.3); } }, [t, target]);
+  const frac = target ? Math.min(1, t / target) : 0;
+  return (
+    <div className={`${card} p-4 flex items-center gap-4`}>
+      <div className="flex-1">
+        <div className={`${muted} text-xs`}>{target ? `Hold timer, target ${fmt(target)}` : 'Hold timer'}</div>
+        <div className="font-display text-[1.9rem] leading-tight tabular-nums">{fmt(t)}</div>
+        {target ? <div className="h-1 rounded-full bg-[#26262e] mt-1.5 overflow-hidden"><div className="h-full bg-[#ff5733] transition-[width] duration-300" style={{ width: `${frac * 100}%` }} /></div> : null}
+      </div>
+      <Tap onClick={() => { if (start) { setBase(t); setStart(null); } else setStart(Date.now()); }} className="h-11 px-5 rounded-2xl bg-[#ff5733] font-semibold">{start ? 'Stop' : 'Start'}</Tap>
+      <Tap onClick={() => { setStart(null); setBase(0); hit.current = false; }} className="w-11 h-11 rounded-2xl bg-[#26262e] flex items-center justify-center" aria-label="Reset stopwatch"><RotateCcw size={17} /></Tap>
+    </div>
+  );
+}
+
+function ProgressRing({ frac, size = 64, children }: { frac: number; size?: number; children?: React.ReactNode }) {
+  const s = 6, r = (size - s) / 2, c = 2 * Math.PI * r;
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="#2a2a31" strokeWidth={s} fill="none" />
+        <motion.circle cx={size / 2} cy={size / 2} r={r} stroke="#ff5733" strokeWidth={s} fill="none" strokeLinecap="round"
+          strokeDasharray={c} initial={{ strokeDashoffset: c }} animate={{ strokeDashoffset: c * (1 - frac) }} transition={{ duration: 0.8, ease: EASE }} />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">{children}</div>
+    </div>
+  );
+}
+
+const list = { hidden: {}, show: { transition: { staggerChildren: 0.045, delayChildren: 0.02 } } };
+const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: { duration: 0.42, ease: EASE } } };
+
+// =====================================================================
 export default function App() {
+  const [splash, setSplash] = useState(true);
+  const [ready, setReady] = useState(false);
   const [nav, setNav] = useState<Nav>({ tab: 'home' });
+  const [dir, setDir] = useState(0);
   const [ws, setWs] = useState<WorkoutState>(() => {
     try {
       const p = JSON.parse(localStorage.getItem(KEY) || '');
-      return { ...blank, setLogs: p.setLogs || {}, completedDays: p.completedDays || {} };
+      return { setLogs: p.setLogs || {}, completedDays: p.completedDays || {} };
     } catch { return blank; }
   });
-  const [timer, setTimer] = useState<{ id: number; s: number; n: string } | null>(null);
   const [q, setQ] = useState('');
-  const [sheet, setSheet] = useState<{ ex: Exercise; kind: 'muscle' | 'equip' } | null>(null);
+  const [sheet, setSheet] = useState<{ kind: 'muscle' | 'equip'; ex: Exercise } | { kind: 'timer' } | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const timer = useRestTimer();
 
   useEffect(() => {
-    try { localStorage.setItem(KEY, JSON.stringify({ setLogs: ws.setLogs, completedDays: ws.completedDays })); } catch { /* ignore */ }
-  }, [ws.setLogs, ws.completedDays]);
+    try { localStorage.setItem(KEY, JSON.stringify(ws)); } catch { /* storage full or blocked */ }
+  }, [ws]);
 
-  const go = (n: Nav) => { setNav(n); window.scrollTo(0, 0); };
+  const go = (n: Nav) => {
+    setDir(n.tab !== nav.tab && depth(n) === 1 ? 0 : depth(n) >= depth(nav) ? 1 : -1);
+    setNav(n); window.scrollTo(0, 0);
+  };
 
-  // Back: close sheet -> go up one level -> (at Home) exit app
+  // Android back button: close popup -> close sheet -> go up one level -> exit app
   const goBack = () => {
+    if (confirmReset) { setConfirmReset(false); return; }
     if (sheet) { setSheet(null); return; }
     const p = parentOf(nav);
-    if (p) { setNav(p); window.scrollTo(0, 0); } else CapApp.exitApp();
+    if (p) go(p); else { try { CapApp.exitApp(); } catch { /* web */ } }
   };
   const backRef = useRef(goBack);
   backRef.current = goBack;
   useEffect(() => {
     const h = CapApp.addListener('backButton', () => backRef.current());
-    return () => { h.then((x) => x.remove()); };
+    return () => { h.then((x) => x.remove()).catch(() => {}); };
   }, []);
-
-  const startTimer = (s = 120, n = 'Rest Interval') => setTimer({ id: Date.now(), s, n });
 
   const withDone = (p: WorkoutState, logs: Record<string, CompletedSetLog>, dayId: string): WorkoutState => {
     const d = DAYS.find((x) => x.id === dayId)!;
     const cd = { ...p.completedDays };
     const t = totalSets(d), n = doneSets(d, logs);
     if (t > 0 && n === t) {
-      if (!cd[dayId]) { try { confetti({ particleCount: 70, spread: 60, origin: { y: 0.6 } }); } catch { /* ignore */ } playChime(880, 0.4); }
+      if (!cd[dayId]) { try { confetti({ particleCount: 90, spread: 70, origin: { y: 0.7 }, colors: ['#ff5733', '#ffb199', '#ffffff', '#4aa8ff'] }); } catch { /* no canvas */ } playChime(880, 0.4); }
       cd[dayId] = { completedAt: new Date().toISOString(), completedSets: n, totalSets: t };
     } else delete cd[dayId];
     return { ...p, setLogs: logs, completedDays: cd };
   };
 
   const toggle = (dayId: string, ex: Exercise, num: number) => {
-    const k = `${dayId}_${ex.id}_set_${num}`;
+    const k = setKey(dayId, ex.id, num);
     const cur = ws.setLogs[k];
     const was = !!cur?.completed;
     const s = ex.sets.find((x) => x.setNum === num);
     setWs((p) => withDone(p, { ...p.setLogs, [k]: { completed: !was, weightKg: cur?.weightKg ?? '', actualReps: s?.targetReps ?? '', completedAt: !was ? new Date().toISOString() : undefined } }, dayId));
-    if (!was && s?.targetReps) startTimer(ex.defaultRestSeconds || 120, ex.name);
+    if (!was && s?.targetReps) timer.start(ex.defaultRestSeconds || 120, ex.name);
   };
 
   const setKg = (dayId: string, ex: Exercise, num: number, w: string) => {
-    const k = `${dayId}_${ex.id}_set_${num}`;
-    setWs((p) => ({ ...p, setLogs: { ...p.setLogs, [k]: { completed: !!p.setLogs[k]?.completed, weightKg: w, actualReps: p.setLogs[k]?.actualReps ?? '' } } }));
+    const k = setKey(dayId, ex.id, num);
+    setWs((p) => ({ ...p, setLogs: { ...p.setLogs, [k]: { ...p.setLogs[k], completed: !!p.setLogs[k]?.completed, weightKg: w } } }));
   };
 
   const finishDay = (d: DayWorkout) =>
     setWs((p) => {
       const logs = { ...p.setLogs };
       d.exercises.forEach((e) => e.sets.forEach((s) => {
-        const k = `${d.id}_${e.id}_set_${s.setNum}`;
+        const k = setKey(d.id, e.id, s.setNum);
         if (!logs[k]?.completed) logs[k] = { completed: true, weightKg: logs[k]?.weightKg ?? '', actualReps: s.targetReps ?? '', completedAt: new Date().toISOString() };
       }));
       return withDone(p, logs, d.id);
@@ -202,154 +234,288 @@ export default function App() {
   const resetDay = (d: DayWorkout) =>
     setWs((p) => {
       const logs = { ...p.setLogs };
-      d.exercises.forEach((e) => e.sets.forEach((s) => delete logs[`${d.id}_${e.id}_set_${s.setNum}`]));
+      d.exercises.forEach((e) => e.sets.forEach((s) => delete logs[setKey(d.id, e.id, s.setNum)]));
       const cd = { ...p.completedDays };
       delete cd[d.id];
-      return { ...p, setLogs: logs, completedDays: cd };
+      return { setLogs: logs, completedDays: cd };
     });
 
-  const resetAll = () => { if (window.confirm('Reset all sets and progress for the week?')) { setWs(blank); setTimer(null); } };
+  const doResetAll = () => { setWs(blank); timer.close(); setConfirmReset(false); };
 
   const back = (label: string) => (
-    <button onClick={goBack} className="flex items-center gap-1 text-[#ff5733] text-base font-semibold">
-      <ChevronLeft size={20} /> {label}
-    </button>
+    <Tap onClick={goBack} scale={0.92} className="flex items-center gap-0.5 -ml-1.5 h-10 pr-3 text-[#ff6a4a] text-[1.05rem] font-semibold">
+      <ChevronLeft size={22} /> {label}
+    </Tap>
   );
 
-  const row = (e: Exercise, sub: string, onClick: () => void, done = false, i?: number) => (
-    <button key={e.id} onClick={onClick} className={`${card} w-full text-left flex items-center gap-3 !py-3.5`}>
-      {i !== undefined && <div className={`w-8 h-8 text-sm ${badge}`}>{i + 1}</div>}
+  const row = (e: Exercise, sub: string, onClick: () => void, done = false, key?: string) => (
+    <Tap key={key ?? e.id} onClick={onClick} delay={NAV_DELAY} scale={0.97}
+      className={`${card} w-full text-left flex items-center gap-3.5 p-2.5 pr-4 active:bg-[#1d1d23] transition-colors`}>
+      <Thumb ex={e} />
       <div className="flex-1 min-w-0">
-        <div className="font-bold">{e.name}</div>
-        <div className="text-gray-400 text-xs truncate">{sub}</div>
+        <div className="font-semibold text-[1.05rem] leading-snug">{e.name}</div>
+        <div className={`${muted} text-[0.85rem] truncate mt-0.5`}>{sub}</div>
       </div>
-      {done ? <Check size={18} className="text-[#ff5733]" /> : <ChevronRight size={18} className="text-gray-600" />}
-    </button>
+      {done
+        ? <span className="w-7 h-7 rounded-full bg-[#ff5733] flex items-center justify-center"><Check size={16} strokeWidth={3} /></span>
+        : <ChevronRight size={18} className="text-[#55555e]" />}
+    </Tap>
   );
 
   // ---------- HOME ----------
-  const home = () => (
-    <div className="px-5 pt-8">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">ApexLift</h1>
-        <button onClick={resetAll} className="p-2 text-gray-500"><RotateCcw size={18} /></button>
-      </div>
-      <p className="text-gray-400 text-sm mt-1 mb-5">{Object.keys(ws.completedDays).length} of 7 days done this week</p>
-      <div className="space-y-2.5">
-        {DAYS.map((d) => {
-          const t = totalSets(d), n = doneSets(d, ws.setLogs);
-          const today = d.dayNumber === ((new Date().getDay() + 6) % 7) + 1;
-          return (
-            <button key={d.id} onClick={() => go({ tab: 'home', day: d.id })} className={`${card} w-full text-left flex items-center gap-3 !py-3.5`}
-              style={today ? { boxShadow: 'inset 0 0 0 1.5px #ff5733' } : undefined}>
-              <div className="w-11 h-11 rounded-2xl bg-[#3a1d18] text-[#ff5733] font-bold text-sm flex items-center justify-center shrink-0">{d.shortDay}</div>
+  const home = () => {
+    const tn = todayNumber();
+    const today = DAYS.find((d) => d.dayNumber === tn)!;
+    const doneCount = TRAINING_DAYS.filter((d) => ws.completedDays[d.id]).length;
+    const t = totalSets(today), n = doneSets(today, ws.setLogs);
+    const next = DAYS.find((d) => d.dayNumber > tn && d.category !== 'rest') ?? DAYS[0];
+    return (
+      <motion.div className="px-5 pt-[calc(1.75rem+env(safe-area-inset-top))]" variants={list} initial="hidden" animate="show">
+        <motion.header variants={item} className="flex items-center gap-3">
+          <img src="/logo.png" alt="" className="w-10 h-10 rounded-xl" />
+          <div className="flex-1">
+            <h1 className="font-display text-[1.75rem] leading-none">ApexLift</h1>
+            <p className={`${muted} text-[0.85rem] mt-1`}>{doneCount} of {TRAINING_DAYS.length} workouts done this week</p>
+          </div>
+          <ResetButton onClick={() => setConfirmReset(true)} />
+        </motion.header>
+
+        {/* week strip */}
+        <motion.div variants={item} className="grid grid-cols-7 gap-1.5 mt-6">
+          {DAYS.map((d) => {
+            const done = !!ws.completedDays[d.id];
+            const isToday = d.dayNumber === tn;
+            const rest = d.category === 'rest';
+            return (
+              <Tap key={d.id} onClick={() => go({ tab: 'home', day: d.id })} delay={NAV_DELAY} scale={0.9} className="flex flex-col items-center gap-1.5 py-1" aria-label={`${d.dayName}, ${d.title}`}>
+                <span className={`text-[0.75rem] font-semibold ${isToday ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`}>{d.shortDay.slice(0, 2)}</span>
+                <span className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${done ? 'bg-[#ff5733]' : 'bg-[#17171c]'} ${isToday && !done ? 'ring-2 ring-[#ff5733] ring-offset-2 ring-offset-[#0d0d12]' : ''}`}>
+                  {done ? <Check size={17} strokeWidth={3} /> : rest ? <Moon size={15} className="text-[#6b6b74]" /> : <span className="w-1.5 h-1.5 rounded-full bg-[#3a3a44]" />}
+                </span>
+              </Tap>
+            );
+          })}
+        </motion.div>
+
+        {/* today */}
+        <motion.div variants={item} className="mt-5">
+          <Tap onClick={() => go({ tab: 'home', day: today.id })} delay={NAV_DELAY} scale={0.975}
+            className="relative w-full text-left rounded-[28px] overflow-hidden p-5 bg-[radial-gradient(120%_90%_at_100%_0%,#4a1f15_0%,#1d1414_45%,#17171c_100%)] border border-[#ff5733]/15">
+            <div className="flex items-start gap-4">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold">{d.dayName}</span>
-                  {today && <span className="text-[9px] font-bold bg-[#ff5733] rounded-full px-2 py-0.5">TODAY</span>}
-                </div>
-                <div className="text-gray-400 text-xs truncate">{d.title} · {d.subtitle}</div>
-                {t > 0 && <div className="h-1 bg-[#2a2a31] rounded-full mt-2"><div className="h-full rounded-full bg-[#ff5733]" style={{ width: `${(n / t) * 100}%` }} /></div>}
+                <div className="text-[0.85rem] font-semibold text-[#ff8a6e]">Today, {today.dayName}</div>
+                <div className="font-display text-[2.7rem] leading-[0.95] mt-2">{today.category === 'rest' ? 'Rest day' : today.title}</div>
+                <p className="text-[#c9c9d0] text-[0.95rem] leading-snug mt-2.5">{today.category === 'rest' ? `Recover today. Next up: ${next.dayName}, ${next.title}.` : today.subtitle}</p>
               </div>
-              {ws.completedDays[d.id] ? <Check size={18} className="text-[#ff5733]" /> : <ChevronRight size={18} className="text-gray-600" />}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
+              {today.category === 'rest'
+                ? <div className="w-16 h-16 rounded-full bg-[#26262e] flex items-center justify-center shrink-0"><Moon size={26} className="text-[#c9c9d0]" /></div>
+                : <ProgressRing frac={t ? n / t : 0}><span className="text-[0.8rem] font-bold tabular-nums">{n}/{t}</span></ProgressRing>}
+            </div>
+            <div className="flex items-center gap-2 mt-5">
+              {today.category !== 'rest' && <>
+                <span className="text-[0.8rem] bg-white/[.06] rounded-full px-3 py-1.5">{today.exercises.length} {today.exercises.length === 1 ? 'exercise' : 'exercises'}</span>
+                <span className="text-[0.8rem] bg-white/[.06] rounded-full px-3 py-1.5">~{today.estimatedDurationMin} min</span>
+              </>}
+              <span className="ml-auto inline-flex items-center gap-1.5 bg-[#ff5733] rounded-full pl-3.5 pr-3 h-10 font-semibold text-[0.95rem]">
+                {today.category === 'rest' ? 'Recovery plan' : ws.completedDays[today.id] ? 'Done' : n > 0 ? 'Continue' : 'Start'}
+                {ws.completedDays[today.id] ? <Check size={16} strokeWidth={3} /> : <Play size={14} fill="currentColor" />}
+              </span>
+            </div>
+          </Tap>
+        </motion.div>
+
+        <motion.h2 variants={item} className="font-display text-[1.15rem] mt-7 mb-3">This week</motion.h2>
+        <div className="space-y-2.5">
+          {DAYS.map((d) => {
+            const tt = totalSets(d), nn = doneSets(d, ws.setLogs);
+            const isToday = d.dayNumber === tn;
+            const done = !!ws.completedDays[d.id];
+            return (
+              <motion.div key={d.id} variants={item}>
+                <Tap onClick={() => go({ tab: 'home', day: d.id })} delay={NAV_DELAY} scale={0.97}
+                  className={`${card} w-full text-left flex items-center gap-3.5 p-3 pr-4 ${isToday ? '!border-[#ff5733]/40' : ''}`}>
+                  <div className={`w-12 h-12 rounded-2xl font-bold text-[0.85rem] flex items-center justify-center shrink-0 ${done ? 'bg-[#ff5733] text-white' : 'bg-[#3a1d18] text-[#ff6a4a]'}`}>{d.shortDay}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-[1.05rem]">{d.title}</span>
+                      {isToday && <span className="text-[0.7rem] font-bold bg-[#ff5733] rounded-full px-2 py-0.5">Today</span>}
+                    </div>
+                    <div className={`${muted} text-[0.85rem] truncate mt-0.5`}>{d.subtitle}</div>
+                    {tt > 0 && (
+                      <div className="h-1 bg-[#26262e] rounded-full mt-2 overflow-hidden">
+                        <motion.div className="h-full rounded-full bg-[#ff5733]" initial={{ width: 0 }} animate={{ width: `${(nn / tt) * 100}%` }} transition={{ duration: 0.7, ease: EASE, delay: 0.25 }} />
+                      </div>
+                    )}
+                  </div>
+                  {done ? <span className="w-7 h-7 rounded-full bg-[#ff5733] flex items-center justify-center"><Check size={16} strokeWidth={3} /></span>
+                    : d.category === 'rest' ? <Moon size={18} className="text-[#55555e]" /> : <ChevronRight size={18} className="text-[#55555e]" />}
+                </Tap>
+              </motion.div>
+            );
+          })}
+        </div>
+      </motion.div>
+    );
+  };
 
   // ---------- DAY ----------
   const dayScreen = (d: DayWorkout) => {
+    if (d.category === 'rest') return restScreen(d);
     const t = totalSets(d), n = doneSets(d, ws.setLogs);
     return (
-      <div className="px-5 pt-7">
+      <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))]">
         {back('Home')}
-        <div className={`${card} mt-3`}>
-          <span className={tag}>{d.dayName} · {d.title}</span>
-          <h1 className="text-xl font-bold mt-3">{d.subtitle}</h1>
-          {t > 0 && <p className="text-gray-400 text-sm mt-1.5">{n}/{t} sets done · ~{d.estimatedDurationMin} min</p>}
+        <div className={`${card} p-5 mt-2`}>
+          <span className={pill}>{d.dayName}</span>
+          <h1 className="font-display text-[2.2rem] leading-none mt-3">{d.title}</h1>
+          <p className="text-[#c9c9d0] mt-2 leading-snug">{d.subtitle}</p>
+          <div className="flex gap-2 mt-4 text-[0.8rem]">
+            <span className="bg-white/[.06] rounded-full px-3 py-1.5">{d.exercises.length} {d.exercises.length === 1 ? 'exercise' : 'exercises'}</span>
+            <span className="bg-white/[.06] rounded-full px-3 py-1.5">~{d.estimatedDurationMin} min</span>
+            <span className="bg-white/[.06] rounded-full px-3 py-1.5 tabular-nums">{n}/{t} sets</span>
+          </div>
+          <div className="h-1.5 bg-[#26262e] rounded-full mt-4 overflow-hidden">
+            <motion.div className="h-full bg-[#ff5733] rounded-full" initial={false} animate={{ width: `${t ? (n / t) * 100 : 0}%` }} transition={{ duration: 0.5, ease: EASE }} />
+          </div>
         </div>
         <div className="space-y-2.5 mt-3">
-          {d.exercises.map((e, i) =>
-            row(e, e.sets.length ? `${e.sets.length} sets${e.sets[0].targetReps ? ' · ' + e.sets.map((s) => s.targetReps).join('/') + ' reps' : ''}` : e.targetArea,
-              () => go({ tab: 'home', day: d.id, ex: e.id }),
-              e.sets.length > 0 && e.sets.every((s) => ws.setLogs[`${d.id}_${e.id}_set_${s.setNum}`]?.completed), i)
-          )}
+          {d.exercises.map((e) => row(e, setsSummary(e), () => go({ tab: 'home', day: d.id, ex: e.id }), exDone(d, e, ws.setLogs)))}
         </div>
-        {t > 0 && (
-          <div className="flex gap-3 mt-4">
-            <button onClick={() => finishDay(d)} className="flex-1 bg-[#ff5733] rounded-2xl py-3 font-bold">Finish workout</button>
-            <button onClick={() => resetDay(d)} className="bg-[#17171c] rounded-2xl px-5 text-gray-300">Reset</button>
+        <div className="flex gap-3 mt-4">
+          <Tap onClick={() => finishDay(d)} scale={0.97} className="flex-1 h-14 bg-[#ff5733] rounded-[20px] font-semibold text-[1.05rem]">
+            {ws.completedDays[d.id] ? 'Workout complete' : 'Finish workout'}
+          </Tap>
+          <Tap onClick={() => resetDay(d)} scale={0.95} className="h-14 px-5 bg-[#17171c] border border-white/[.04] rounded-[20px] text-[#c9c9d0] font-semibold">Reset</Tap>
+        </div>
+      </div>
+    );
+  };
+
+  const restScreen = (d: DayWorkout) => {
+    const r = d.exercises[0];
+    const icons = [Ban, BedDouble, Utensils, Droplets, Footprints];
+    return (
+      <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))] space-y-3">
+        {back('Home')}
+        <div className="relative rounded-[28px] overflow-hidden p-6 bg-[radial-gradient(110%_100%_at_100%_0%,#1d2f4f_0%,#151a26_45%,#17171c_100%)] border border-white/[.05]">
+          <motion.div initial={{ rotate: -30, opacity: 0, scale: 0.7 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} transition={{ type: 'spring', stiffness: 200, damping: 16 }}
+            className="w-16 h-16 rounded-full bg-[#4aa8ff]/15 text-[#8fd3ff] flex items-center justify-center"><Moon size={30} /></motion.div>
+          <h1 className="font-display text-[2.2rem] leading-none mt-5">Rest &amp; recover</h1>
+          <p className="text-[#c9c9d0] mt-3 leading-relaxed">{r.description}</p>
+        </div>
+        <div className={`${card} p-5`}>
+          <h2 className="font-display text-[1.15rem] mb-4">Today's recovery</h2>
+          <div className="space-y-4">
+            {r.stepByStep.map((s, i) => {
+              const Icon = icons[i] ?? CircleCheck;
+              return (
+                <div key={i} className="flex gap-3.5">
+                  <div className="w-10 h-10 rounded-2xl bg-[#4aa8ff]/10 text-[#8fd3ff] flex items-center justify-center shrink-0"><Icon size={18} /></div>
+                  <p className="text-[#c9c9d0] leading-relaxed pt-2">{s}</p>
+                </div>
+              );
+            })}
           </div>
-        )}
+        </div>
+        <div className={`${card} p-5`}>
+          <h2 className="font-display text-[1.15rem] mb-3">Good to know</h2>
+          {[...r.formTips, ...r.commonMistakes.map((m) => `Avoid: ${m.charAt(0).toLowerCase()}${m.slice(1)}`)].map((t, i) => (
+            <p key={i} className="text-[#9a9aa3] leading-relaxed mb-2 flex gap-2"><span className="text-[#8fd3ff]">•</span>{t}</p>
+          ))}
+        </div>
       </div>
     );
   };
 
   // ---------- EXERCISE DETAIL ----------
   const detail = (e: Exercise, dayId?: string) => {
-    const c = catOf(e);
-    const eq = equipOf(e.name);
-    const on = regionsFor(e.anatomyHighlightGroups);
     const timed = e.sets.find((s) => s.isTimed);
+    const prim = e.anatomyHighlightGroups;
     return (
-      <div className="px-5 pt-7 space-y-3">
-        {back(dayId ? DAYS.find((d) => d.id === dayId)!.dayName : c)}
-        <div className={card}>
-          <span className={tag}>{c} · {e.targetArea.split('(')[0].trim()}</span>
-          <h1 className="text-2xl font-bold mt-3">{e.name}</h1>
+      <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))] space-y-3">
+        {back(dayId ? DAYS.find((d) => d.id === dayId)!.dayName : nav.cat ?? (q ? 'Search' : 'Exercises'))}
+        <div className={`${card} p-5`}>
+          <span className={pill}>{e.category}</span>
+          <h1 className="font-display text-[1.9rem] leading-[1.02] mt-3">{e.name}</h1>
+          <p className={`${muted} mt-2 leading-snug`}>{e.description}</p>
         </div>
+        <FormPic key={e.id} ex={e} />
         <div className="grid grid-cols-2 gap-3">
-          <button onClick={() => setSheet({ ex: e, kind: 'equip' })} className={`${card} text-center !px-3`}>
-            <div className="font-bold mb-3">Equipment</div>
-            <EquipArt kind={eq.kind} h={92} />
-            <div className="text-gray-400 text-xs mt-3">{eq.label}</div>
-          </button>
-          <button onClick={() => setSheet({ ex: e, kind: 'muscle' })} className={`${card} !px-3`}>
-            <div className="font-bold mb-2">Muscles</div>
-            <Body on={on} className="h-44 w-auto mx-auto block" />
-          </button>
+          <Tap onClick={() => setSheet({ ex: e, kind: 'equip' })} scale={0.96} className={`${card} p-4 text-center active:bg-[#1d1d23]`}>
+            <div className="font-semibold mb-3">Equipment</div>
+            <div className="h-[11.5rem] flex items-center justify-center"><EquipArt kind={e.equipment.kind} h={88} /></div>
+            <div className={`${muted} text-[0.8rem] mt-1 truncate`}>{e.equipment.label}</div>
+          </Tap>
+          <Tap onClick={() => setSheet({ ex: e, kind: 'muscle' })} scale={0.96} className={`${card} p-4 text-center active:bg-[#1d1d23]`}>
+            <div className="font-semibold mb-3">Muscles</div>
+            <Body on={regionsFor(prim)} soft={regionsFor(e.secondaryGroups)} className="h-[11.5rem] w-auto mx-auto block" />
+            <div className={`${muted} text-[0.8rem] mt-1 truncate`}>{prim.map((g) => MUSCLE_LABEL[g]).join(', ') || '—'}</div>
+          </Tap>
         </div>
-        {dayId && e.sets.length > 0 && (
-          <div className={card}>
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="font-bold text-lg">My Sets</h2>
-              <button onClick={() => startTimer(e.defaultRestSeconds || 120, e.name)} className="flex items-center gap-1 text-[#ff5733] text-sm font-semibold"><Timer size={15} /> Rest timer</button>
+        {dayId && e.sets.length > 0 ? (
+          <div className={`${card} p-5`}>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-display text-[1.15rem]">My sets</h2>
+              <Tap onClick={() => timer.start(e.defaultRestSeconds || 120, e.name)} scale={0.92} className="flex items-center gap-1.5 text-[#ff6a4a] text-sm font-semibold h-9 px-1">
+                <Timer size={16} /> Rest {fmt(e.defaultRestSeconds || 120)}
+              </Tap>
             </div>
             {e.sets.map((s) => {
-              const l = ws.setLogs[`${dayId}_${e.id}_set_${s.setNum}`];
+              const l = ws.setLogs[setKey(dayId, e.id, s.setNum)];
               return (
                 <div key={s.setNum} className="flex items-center gap-3 py-1.5">
-                  <div className={`w-7 h-7 text-xs ${badge}`}>{s.setNum}</div>
-                  <div className="flex-1 text-sm text-gray-300">{s.targetReps ? `${s.targetReps} reps` : s.targetDescription}</div>
+                  <div className={`w-8 h-8 rounded-full text-[0.8rem] font-bold flex items-center justify-center shrink-0 ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#3a1d18] text-[#ff6a4a]'}`}>{s.setNum}</div>
+                  <div className="flex-1 text-[#c9c9d0]">{s.targetReps ? `${s.targetReps} reps` : s.targetDescription}</div>
                   {s.targetReps && (
-                    <input inputMode="decimal" placeholder="kg" value={l?.weightKg ?? ''} onChange={(ev) => setKg(dayId, e, s.setNum, ev.target.value)}
-                      className="w-14 bg-[#0d0d12] rounded-xl px-2 py-2 text-center text-sm outline-none" />
+                    <label className="flex items-center bg-[#0d0d12] rounded-xl pr-2.5 focus-within:ring-2 focus-within:ring-[#ff5733]/60">
+                      <input inputMode="decimal" placeholder="0" value={l?.weightKg ?? ''} onChange={(ev) => setKg(dayId, e, s.setNum, ev.target.value)}
+                        className="w-12 bg-transparent py-2.5 text-center outline-none tabular-nums" aria-label={`Set ${s.setNum} weight in kg`} />
+                      <span className="text-[#6b6b74] text-xs">kg</span>
+                    </label>
                   )}
-                  <button onClick={() => toggle(dayId, e, s.setNum)} className={`w-9 h-9 rounded-xl flex items-center justify-center ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#2a2a31] text-gray-500'}`}><Check size={18} /></button>
+                  <motion.button type="button" whileTap={{ scale: 0.85 }} onClick={() => toggle(dayId, e, s.setNum)} aria-label={`Mark set ${s.setNum} done`}
+                    className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-colors ${l?.completed ? 'bg-[#ff5733]' : 'bg-[#26262e] text-[#6b6b74]'}`}>
+                    <motion.span key={String(!!l?.completed)} initial={{ scale: l?.completed ? 0.4 : 1 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 14 }}><Check size={19} strokeWidth={3} /></motion.span>
+                  </motion.button>
                 </div>
               );
             })}
           </div>
+        ) : (
+          <div className={`${card} p-5 flex items-center gap-4`}>
+            <div className="flex-1">
+              <div className={`${muted} text-xs`}>Suggested</div>
+              <div className="font-semibold mt-0.5">{setsSummary(e)}</div>
+            </div>
+            {e.defaultRestSeconds > 0 && (
+              <Tap onClick={() => timer.start(e.defaultRestSeconds, e.name)} scale={0.94} className="flex items-center gap-1.5 h-10 px-3.5 rounded-2xl bg-[#3a1d18] text-[#ff6a4a] font-semibold text-sm">
+                <Timer size={16} /> Rest {fmt(e.defaultRestSeconds)}
+              </Tap>
+            )}
+          </div>
         )}
-        {timed && <Stopwatch target={timed.targetSeconds} />}
-        <div className={card}>
-          <h2 className="font-bold text-lg mb-3">Movement</h2>
+        {timed && <Stopwatch key={e.id} target={timed.targetSeconds} />}
+        <div className={`${card} p-5`}>
+          <h2 className="font-display text-[1.15rem] mb-4">How to do it</h2>
           {e.stepByStep.map((s, i) => (
-            <div key={i} className="flex gap-3 mb-3">
-              <div className={`w-7 h-7 text-xs ${badge}`}>{i + 1}</div>
-              <p className="text-gray-400 leading-relaxed">{s}</p>
+            <div key={i} className="flex gap-3.5 mb-3.5 last:mb-0">
+              <div className="w-7 h-7 rounded-full bg-[#3a1d18] text-[#ff6a4a] text-[0.8rem] font-bold flex items-center justify-center shrink-0">{i + 1}</div>
+              <p className="text-[#c9c9d0] leading-relaxed pt-0.5">{s}</p>
             </div>
           ))}
         </div>
         {e.formTips.length > 0 && (
-          <div className={card}>
-            <h2 className="font-bold text-lg mb-2">Form tips</h2>
-            {e.formTips.map((t, i) => <p key={i} className="text-gray-400 leading-relaxed mb-1.5">• {t}</p>)}
+          <div className={`${card} p-5`}>
+            <h2 className="font-display text-[1.15rem] mb-3">Form tips</h2>
+            {e.formTips.map((t, i) => <p key={i} className="text-[#c9c9d0] leading-relaxed mb-2.5 last:mb-0 flex gap-2.5"><CircleCheck size={18} className="text-[#4ade80] shrink-0 mt-0.5" />{t}</p>)}
           </div>
         )}
-        <FormPic key={e.id} id={e.id} photos={e.photos ?? []} />
+        {e.commonMistakes.length > 0 && (
+          <div className={`${card} p-5`}>
+            <h2 className="font-display text-[1.15rem] mb-3">Common mistakes</h2>
+            {e.commonMistakes.map((t, i) => <p key={i} className="text-[#c9c9d0] leading-relaxed mb-2.5 last:mb-0 flex gap-2.5"><CircleAlert size={18} className="text-[#ff6a4a] shrink-0 mt-0.5" />{t}</p>)}
+          </div>
+        )}
       </div>
     );
   };
@@ -358,40 +524,49 @@ export default function App() {
   const library = () => {
     const open = (e: Exercise) => go({ tab: 'ex', cat: nav.cat, ex: e.id });
     if (nav.cat) {
+      const exs = ALL.filter((e) => e.category === nav.cat);
       return (
-        <div className="px-5 pt-7">
+        <div className="px-5 pt-[calc(1.25rem+env(safe-area-inset-top))]">
           {back('Exercises')}
-          <h1 className="text-3xl font-bold my-3">{nav.cat}</h1>
-          <div className="space-y-2.5">{ALL.filter((e) => catOf(e) === nav.cat).map((e) => row(e, e.targetArea, () => open(e)))}</div>
+          <h1 className="font-display text-[2.2rem] leading-none mt-2">{nav.cat}</h1>
+          <p className={`${muted} mt-1.5 mb-4`}>{exs.length} exercises</p>
+          <motion.div className="space-y-2.5" variants={list} initial="hidden" animate="show">
+            {exs.map((e) => <motion.div key={e.id} variants={item}>{row(e, `${e.equipment.label}  ·  ${setsSummary(e)}`, () => open(e))}</motion.div>)}
+          </motion.div>
         </div>
       );
     }
-    const found = q.trim() ? ALL.filter((e) => e.name.toLowerCase().includes(q.trim().toLowerCase())) : null;
+    const term = q.trim().toLowerCase();
+    const found = term ? ALL.filter((e) => `${e.name} ${e.category} ${e.equipment.label} ${e.targetArea}`.toLowerCase().includes(term)) : null;
     return (
-      <div className="px-5 pt-8">
-        <h1 className="text-3xl font-bold mb-4">Exercises</h1>
-        <div className="flex items-center gap-3 bg-[#17171c] rounded-2xl px-4 py-3 mb-4">
-          <Search size={18} className="text-gray-500" />
-          <input value={q} onChange={(ev) => setQ(ev.target.value)} placeholder="Search exercises..." className="bg-transparent outline-none flex-1 text-sm" />
-        </div>
+      <div className="px-5 pt-[calc(1.75rem+env(safe-area-inset-top))]">
+        <h1 className="font-display text-[1.75rem] leading-none">Exercises</h1>
+        <p className={`${muted} text-[0.85rem] mt-1.5`}>{ALL.length} exercises with demos</p>
+        <label className="flex items-center gap-3 bg-[#17171c] border border-white/[.04] rounded-2xl px-4 h-12 mt-5 mb-4 focus-within:border-[#ff5733]/50 transition-colors">
+          <Search size={18} className="text-[#6b6b74]" />
+          <input value={q} onChange={(ev) => setQ(ev.target.value)} placeholder="Search exercises, muscles, equipment" className="bg-transparent outline-none flex-1 text-[0.95rem] placeholder:text-[#6b6b74]" />
+          {q && <Tap onClick={() => setQ('')} scale={0.85} className="text-[#6b6b74] -mr-1 p-1" aria-label="Clear search"><X size={16} /></Tap>}
+        </label>
         {found ? (
-          <div className="space-y-2.5">{found.map((e) => row(e, catOf(e), () => open(e)))}</div>
+          found.length ? <div className="space-y-2.5">{found.map((e) => row(e, `${e.category}  ·  ${e.equipment.label}`, () => open(e)))}</div>
+            : <p className={`${muted} text-center py-10`}>No exercises match "{q}". Try a muscle like "chest" or equipment like "cable".</p>
         ) : (
           <div className="grid grid-cols-2 gap-3">
-            {CATS.map((c) => {
-              const n = ALL.filter((e) => catOf(e) === c).length;
-              if (!n) return null;
-              const img = catPhoto(c);
+            {CATS.map(({ c, view, on }) => {
+              const n = ALL.filter((e) => e.category === c).length;
               return (
-                <button key={c} onClick={() => go({ tab: 'ex', cat: c })} className="relative aspect-[6/5] rounded-3xl overflow-hidden text-left"
-                  style={{ background: `linear-gradient(150deg, ${FALLBACK[c]}, #0d0d12 90%)` }}>
-                  {img && <img src={img} alt="" className="absolute inset-0 w-full h-full object-cover" onError={(ev) => (ev.currentTarget.style.display = 'none')} />}
-                  <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(0,0,0,.85), rgba(0,0,0,.35) 60%, rgba(0,0,0,.45))' }} />
-                  <div className="absolute bottom-3 left-4">
-                    <div className="font-bold text-lg leading-tight">{c}</div>
-                    <div className="text-gray-300 text-xs">{n} exercises</div>
+                <Tap key={c} onClick={() => go({ tab: 'ex', cat: c })} delay={NAV_DELAY} scale={0.96}
+                  className={`${card} relative h-[8.5rem] overflow-hidden text-left active:bg-[#1d1d23]`}>
+                  <div className={`absolute flex justify-center right-[-22px] top-1 bottom-[-6px] w-[56%]`}>
+                    {c === 'Cardio'
+                      ? <div className="self-center w-16 h-16 rounded-full bg-[#3a1d18] flex items-center justify-center"><Heart size={30} className="text-[#ff5733]" fill="#ff5733" /></div>
+                      : <Body view={view} on={regionsFor(on)} className="h-full w-auto" />}
                   </div>
-                </button>
+                  <div className="absolute left-4 bottom-3.5 [text-shadow:0_1px_8px_#17171c]">
+                    <div className="font-display text-[1.2rem] leading-tight">{c}</div>
+                    <div className={`${muted} text-[0.8rem]`}>{n} exercises</div>
+                  </div>
+                </Tap>
               );
             })}
           </div>
@@ -401,52 +576,103 @@ export default function App() {
   };
 
   const day = DAYS.find((d) => d.id === nav.day);
-  const exObj = nav.ex ? day?.exercises.find((e) => e.id === nav.ex) ?? ALL.find((e) => e.id === nav.ex) : undefined;
+  const exObj = nav.ex ? day?.exercises.find((e) => e.id === nav.ex) ?? BY_ID.get(nav.ex) : undefined;
   const screen = exObj ? detail(exObj, day?.id) : nav.tab === 'home' ? (day ? dayScreen(day) : home()) : library();
+  const screenKey = `${nav.tab}/${nav.day ?? ''}/${nav.cat ?? ''}/${nav.ex ?? ''}`;
 
-  const tab = (id: 'home' | 'ex', label: string, Icon: typeof Calendar) => (
-    <button onClick={() => go({ tab: id })} className="flex-1 flex flex-col items-center gap-1 py-1.5">
-      <div className={`px-5 py-1 rounded-full ${nav.tab === id ? 'bg-[#3a1d18] text-[#ff5733]' : 'text-gray-500'}`}><Icon size={20} /></div>
-      <span className={`text-[11px] ${nav.tab === id ? 'text-[#ff5733]' : 'text-gray-500'}`}>{label}</span>
-    </button>
-  );
+  const tab = (id: 'home' | 'ex', label: string, Icon: typeof House) => {
+    const on = nav.tab === id && sheet?.kind !== 'timer';
+    return (
+      <Tap onClick={() => (nav.tab === id && depth(nav) === 1 ? window.scrollTo({ top: 0, behavior: 'smooth' }) : go({ tab: id }))} scale={0.9}
+        className="flex-1 flex flex-col items-center gap-1 pt-2 pb-1" aria-label={label}>
+        <div className="relative px-5 py-1.5">
+          {on && <motion.div layoutId="tabpill" className="absolute inset-0 rounded-full bg-[#3a1d18]" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
+          <Icon size={21} className={`relative ${on ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`} />
+        </div>
+        <span className={`text-[0.72rem] font-medium ${on ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`}>{label}</span>
+      </Tap>
+    );
+  };
+  const timerOn = sheet?.kind === 'timer';
+
+  const onReveal = useCallback(() => setReady(true), []);
+  const onSplashDone = useCallback(() => setSplash(false), []);
+  const sheetEx = sheet && sheet.kind !== 'timer' ? sheet.ex : null;
 
   return (
-    <div className={`min-h-screen bg-[#0d0d12] text-white max-w-md mx-auto ${timer ? 'pb-48' : 'pb-28'}`}>
-      {screen}
-      {timer && <RestTimer key={timer.id} s={timer.s} n={timer.n} onClose={() => setTimer(null)} />}
-      {sheet && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end" onClick={() => setSheet(null)}>
-          <div className="w-full max-w-md mx-auto bg-[#0d0d12] rounded-t-3xl p-5 pb-8" onClick={(ev) => ev.stopPropagation()}>
-            <div className="w-10 h-1 bg-gray-600 rounded-full mx-auto mb-4" />
-            {sheet.kind === 'muscle' ? (
-              <>
-                <h2 className="text-xl font-bold text-center mb-4">Muscles Worked</h2>
-                <Body on={regionsFor(sheet.ex.anatomyHighlightGroups)} className="h-80 w-auto mx-auto block" />
-                <div className="flex flex-wrap justify-center gap-2 mt-5">
-                  {simpleNames(sheet.ex.anatomyHighlightGroups).map((m) => (
-                    <span key={m} className="bg-[#ff5733] rounded-full px-4 py-2 text-sm font-bold">{m}</span>
-                  ))}
+    <MotionConfig reducedMotion="user">
+      <div className={`min-h-screen bg-[#0d0d12] text-[#f4f4f5] max-w-md mx-auto ${timer.t ? 'pb-48' : 'pb-32'}`}>
+        {ready && (
+          <AnimatePresence mode="popLayout" initial={false} custom={dir}>
+            <motion.main key={screenKey} custom={dir}
+              initial={{ opacity: 0, x: dir * 28 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: dir * -20, transition: { duration: 0.12 } }}
+              transition={{ duration: 0.24, ease: EASE }}>
+              {screen}
+            </motion.main>
+          </AnimatePresence>
+        )}
+
+        <TimerDock api={timer} onExpand={() => setSheet({ kind: 'timer' })} />
+
+        <Sheet open={!!sheet} onClose={() => setSheet(null)} label={sheet?.kind === 'timer' ? 'Rest timer' : sheet?.kind === 'muscle' ? 'Muscles worked' : 'Equipment'}>
+          {sheet?.kind === 'timer' && <TimerPanel api={timer} />}
+          {sheet?.kind === 'muscle' && sheetEx && (
+            <>
+              <h2 className="font-display text-xl text-center">Muscles worked</h2>
+              <p className={`${muted} text-sm text-center mt-1`}>{sheetEx.name}</p>
+              <Body on={regionsFor(sheetEx.anatomyHighlightGroups)} soft={regionsFor(sheetEx.secondaryGroups)} className="h-[21rem] w-auto mx-auto block mt-5" />
+              <div className="flex flex-wrap justify-center gap-2 mt-5">
+                {sheetEx.anatomyHighlightGroups.map((m) => <span key={m} className="bg-[#ff5733] rounded-full px-4 py-2 text-sm font-semibold">{MUSCLE_LABEL[m]}</span>)}
+                {(sheetEx.secondaryGroups ?? []).map((m) => <span key={m} className="border border-[#8a3423] text-[#ffb19e] rounded-full px-4 py-2 text-sm font-medium">{MUSCLE_LABEL[m]}</span>)}
+              </div>
+              {(sheetEx.secondaryGroups?.length ?? 0) > 0 && (
+                <div className={`flex justify-center gap-5 mt-4 text-xs ${muted}`}>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[#ff5733]" />Main target</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[#8a3423]" />Also working</span>
                 </div>
-              </>
-            ) : (
-              <>
-                <h2 className="text-xl font-bold text-center mb-4">Equipment</h2>
-                <EquipArt kind={equipOf(sheet.ex.name).kind} h={150} />
-                <div className="text-center font-semibold mt-4">{equipOf(sheet.ex.name).label}</div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-      <nav className="fixed bottom-0 inset-x-0 max-w-md mx-auto bg-[#0d0d12] border-t border-[#1f1f26] flex px-4 pb-2 pt-1 z-30">
-        {tab('home', 'Home', Calendar)}
-        {tab('ex', 'Exercises', Dumbbell)}
-        <button onClick={() => startTimer(120)} className="flex-1 flex flex-col items-center gap-1 py-1.5 text-gray-500">
-          <div className="px-5 py-1"><Timer size={20} /></div>
-          <span className="text-[11px]">Timer</span>
-        </button>
-      </nav>
-    </div>
+              )}
+            </>
+          )}
+          {sheet?.kind === 'equip' && sheetEx && (
+            <>
+              <h2 className="font-display text-xl text-center">Equipment</h2>
+              <p className={`${muted} text-sm text-center mt-1`}>{sheetEx.name}</p>
+              <div className="py-8"><EquipArt kind={sheetEx.equipment.kind} h={150} /></div>
+              <div className="text-center font-semibold text-lg">{sheetEx.equipment.label}</div>
+            </>
+          )}
+        </Sheet>
+
+        <Confirm open={confirmReset} icon={<RotateCcw size={28} />} title="Reset this week?"
+          body="This clears every ticked set and every weight you've entered for all 7 days. It can't be undone."
+          confirmLabel="Reset week" onConfirm={doResetAll} onCancel={() => setConfirmReset(false)} />
+
+        <nav className="fixed bottom-0 inset-x-0 max-w-md mx-auto bg-[#0d0d12]/92 backdrop-blur-xl border-t border-white/[.05] flex px-3 pb-[calc(.5rem+env(safe-area-inset-bottom))] z-30">
+          {tab('home', 'Home', House)}
+          {tab('ex', 'Exercises', Dumbbell)}
+          <Tap onClick={() => setSheet({ kind: 'timer' })} scale={0.9} className="flex-1 flex flex-col items-center gap-1 pt-2 pb-1" aria-label="Timer">
+            <div className="relative px-5 py-1.5">
+              {timerOn && <motion.div layoutId="tabpill" className="absolute inset-0 rounded-full bg-[#3a1d18]" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
+              <Timer size={21} className={`relative ${timerOn || timer.running ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`} />
+              {timer.running && <span className="absolute top-1 right-4 w-2 h-2 rounded-full bg-[#ff5733] animate-pulse" />}
+            </div>
+            <span className={`text-[0.72rem] font-medium ${timerOn ? 'text-[#ff6a4a]' : 'text-[#6b6b74]'}`}>Timer</span>
+          </Tap>
+        </nav>
+
+        {splash && <Splash onReveal={onReveal} onDone={onSplashDone} />}
+      </div>
+    </MotionConfig>
+  );
+}
+
+/** Round reset button; the arrow spins back when pressed. */
+function ResetButton({ onClick }: { onClick: () => void }) {
+  const [spin, setSpin] = useState(0);
+  return (
+    <Tap onClick={() => { setSpin((s) => s - 360); window.setTimeout(onClick, 140); }} scale={0.88}
+      className="w-11 h-11 rounded-full bg-[#17171c] border border-white/[.06] flex items-center justify-center text-[#c9c9d0]" aria-label="Reset week">
+      <motion.span animate={{ rotate: spin }} transition={{ duration: 0.5, ease: EASE }} className="flex"><RotateCcw size={18} /></motion.span>
+    </Tap>
   );
 }
